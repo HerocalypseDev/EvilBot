@@ -380,10 +380,10 @@ async def tick():
     now = datetime.now(timezone.utc)
     today = now.date().isoformat()
     for guild in bot.guilds:
-        row = db.get_guild(bot.db, guild.id)
-        if not row:
-            continue
-        try:
+        try:  # one guild's failure must not stop the loop: an uncaught error ends a tasks.loop for good
+            row = db.get_guild(bot.db, guild.id)
+            if not row:
+                continue
             if row["boss_channel_id"]:
                 await boss_tick(guild, row, now)
             if row["board_day"] != today:
@@ -415,7 +415,10 @@ async def tick():
 async def before_tick():
     await bot.wait_until_ready()
     for guild in bot.guilds:  # brings the board and button back after a /stop or crash
-        await refresh_board(guild)
+        try:  # an error here would stop the loop from ever starting
+            await refresh_board(guild)
+        except Exception:
+            log.exception("Startup board refresh failed for guild %s", guild.id)
 
 
 @bot.tree.command(description="Post the donation panel in a channel.")
