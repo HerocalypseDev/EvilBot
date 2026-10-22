@@ -1,3 +1,5 @@
+import io
+import logging
 import os
 
 import discord
@@ -5,10 +7,12 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
+import board
 import db
-from config import DONATION_AMOUNT, MEMBER_ROLE_NAME
+from config import DONATION_AMOUNT, MEMBER_ROLE_NAME, RECENT_DONORS
 
 load_dotenv()
+log = logging.getLogger("evil")
 
 intents = discord.Intents.default()
 intents.members = True  # privileged: needed for role checks and the not-donated list
@@ -20,6 +24,47 @@ def is_staff(interaction):
         return True
     row = db.get_guild(bot.db, interaction.guild_id)
     return bool(row and row["officer_role_id"] and user.get_role(row["officer_role_id"]))
+
+
+async def require_staff(interaction):
+    if is_staff(interaction):
+        return True
+    await interaction.response.send_message("Staff only.", ephemeral=True)
+    return False
+
+
+def tracked_members(guild, member_role_id):
+    role = guild.get_role(member_role_id)
+    return [(m.id, m.display_name) for m in role.members if not m.bot] if role else []
+
+
+def board_embed(data):
+    embed = discord.Embed(
+        title="Evil Donations — guild board",
+        description=f"Today (UTC): **{data['today_count']}** donated\n"
+                    f"Resets <t:{data['reset_ts']}:t> (your local time)")
+    recent = "\n".join(f"{ign} — {amount:,} coins" for ign, amount in data["recent"])
+    embed.add_field(name=f"Last {RECENT_DONORS} donors", value=recent or "Nobody yet.", inline=False)
+    embed.add_field(name=f"Not donated yet ({len(data['waiting'])})",
+                    value=board.join_capped(data["waiting"]) or "Everyone has donated.", inline=False)
+    embed.add_field(name="Yesterday (UTC)",
+                    value=f"Donated: {data['yesterday_count']} · Coins: {data['yesterday_coins']:,}",
+                    inline=False)
+    return embed
+
+
+async def refresh_board(guild):
+    row = db.get_guild(bot.db, guild.id)
+    channel = row and guild.get_channel(row["panel_channel_id"])
+    if not channel or not row["status_message_id"]:
+        return
+    data = board.board_data(bot.db, guild.id, tracked_members(guild, row["member_role_id"]),
+                            db.today_utc(), db.yesterday_utc())
+    try:
+        await channel.get_partial_message(row["status_message_id"]).edit(
+            content=None, embed=board_embed(data))
+    except discord.HTTPException as e:
+        log.warning("Board refresh failed in guild %s: %s", guild.id, e)
 
 
 class PanelView(discord.ui.View):
@@ -46,6 +91,41 @@ class PanelView(discord.ui.View):
                 "You already logged a donation today.", ephemeral=True)
         await interaction.response.send_message(
             f"Logged {DONATION_AMOUNT:,} for today.", ephemeral=True)
+        await refresh_board(interaction.guild)
+
+
+class HistoryView(discord.ui.View):
+    """10 donations per page with Previous / Next buttons."""
+
+    def __init__(self, name, rows):
+        super().__init__(timeout=300)
+        self.name, self.rows, self.page = name, rows, 0
+        self._update_buttons()
+
+    def text(self):
+        chunk, self.page, pages = board.paginate(self.rows, self.page)
+        lines = [f"#{r['id']}  {r['day_utc']}  {r['amount']:,}  {r['status']}" for r in chunk]
+        return f"**{self.name}**  page {self.page + 1}/{pages}\n" + "\n".join(lines)
+
+    def _update_buttons(self):
+        pages = board.paginate(self.rows, self.page)[2]
+        self.previous.disabled = self.page <= 0
+        self.next.disabled = self.page >= pages - 1
+
+    async def _show(self, interaction):
+        text = self.text()  # also clamps self.page
+        self._update_buttons()
+        await interaction.response.edit_message(content=text, view=self)
+
+    @discord.ui.button(label="Previous")
+    async def previous(self, interaction, button):
+        self.page -= 1
+        await self._show(interaction)
+
+    @discord.ui.button(label="Next")
+    async def next(self, interaction, button):
+        self.page += 1
+        await self._show(interaction)
 
 
 class Bot(commands.Bot):
@@ -74,10 +154,11 @@ async def setup(interaction: discord.Interaction, panel_channel: discord.TextCha
     await interaction.response.defer(ephemeral=True)
     panel = await panel_channel.send("**Evil Donations**\nPress the button to log today's donation.",
                                      view=PanelView())
-    board = await panel_channel.send("Status board will appear here.")  # real board comes in M4
+    status = await panel_channel.send("Loading board...")
     db.save_guild(bot.db, interaction.guild_id, panel_channel_id=panel_channel.id,
-                  panel_message_id=panel.id, status_message_id=board.id,
+                  panel_message_id=panel.id, status_message_id=status.id,
                   officer_role_id=officer_role.id, member_role_id=member_role.id)
+    await refresh_board(interaction.guild)
     await interaction.followup.send(f"Panel posted in {panel_channel.mention}.", ephemeral=True)
 
 
@@ -119,11 +200,55 @@ async def history(interaction: discord.Interaction, member: discord.Member | Non
             "You can only see your own history.", ephemeral=True)
     rows = db.history(bot.db, interaction.guild_id, target.id)
     if not rows:
-        msg = f"No donations for {target.display_name}."
+        return await interaction.response.send_message(
+            f"No donations for {target.display_name}.", ephemeral=True)
+    view = HistoryView(target.display_name, rows)
+    await interaction.response.send_message(view.text(), view=view, ephemeral=True)
+
+
+@bot.tree.command(name="log", description="Staff: log a donation for a member.")
+@app_commands.guild_only()
+@app_commands.choices(day=[app_commands.Choice(name="today", value="today"),
+                           app_commands.Choice(name="yesterday", value="yesterday")])
+async def log_donation(interaction: discord.Interaction, member: discord.Member,
+                       day: app_commands.Choice[str] | None = None):
+    if not await require_staff(interaction):
+        return
+    ign = db.get_ign(bot.db, interaction.guild_id, member.id)
+    if not ign:
+        return await interaction.response.send_message("Member has no linked IGN.", ephemeral=True)
+    date = db.yesterday_utc() if day and day.value == "yesterday" else db.today_utc()
+    try:
+        db.record(bot.db, interaction.guild_id, member.id, member.display_name, ign, date,
+                  logged_by=interaction.user.id)
+    except db.AlreadyDonated:
+        return await interaction.response.send_message(
+            "Member already has an approved donation that day.", ephemeral=True)
+    await interaction.response.send_message(
+        f"Logged {DONATION_AMOUNT:,} for **{ign}** on {date}.", ephemeral=True)
+    await refresh_board(interaction.guild)
+
+
+@bot.tree.command(description="Staff: cancel a donation by its id (see /history or /export).")
+@app_commands.guild_only()
+async def undo(interaction: discord.Interaction, submission_id: int):
+    if not await require_staff(interaction):
+        return
+    if db.void(bot.db, interaction.guild_id, submission_id, interaction.user.id):
+        await interaction.response.send_message(f"Voided donation #{submission_id}.", ephemeral=True)
+        await refresh_board(interaction.guild)
     else:
-        lines = [f"#{r['id']}  {r['day_utc']}  {r['amount']:,}  {r['status']}" for r in rows[:20]]
-        msg = f"**{target.display_name}**\n" + "\n".join(lines)
-    await interaction.response.send_message(msg, ephemeral=True)
+        await interaction.response.send_message("That donation is not active.", ephemeral=True)
+
+
+@bot.tree.command(description="Staff: download all donations as a CSV file.")
+@app_commands.guild_only()
+async def export(interaction: discord.Interaction):
+    if not await require_staff(interaction):
+        return
+    data = db.export_csv(bot.db, interaction.guild_id).encode("utf-8-sig")  # BOM: Excel reads UTF-8
+    await interaction.response.send_message(
+        file=discord.File(io.BytesIO(data), "donations.csv"), ephemeral=True)
 
 
 @setup.error

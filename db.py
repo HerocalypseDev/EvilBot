@@ -1,5 +1,7 @@
+import csv
+import io
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from config import DONATION_AMOUNT, IGN_MAX, IGN_MIN
 
@@ -65,6 +67,10 @@ def now_iso():
 
 def today_utc():
     return datetime.now(timezone.utc).date().isoformat()
+
+
+def yesterday_utc():
+    return (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
 
 
 def connect(path):
@@ -149,16 +155,56 @@ def get_approved(conn, guild_id, discord_id, day):
         "AND status = 'approved'", (guild_id, discord_id, day)).fetchone()
 
 
-def void(conn, submission_id, staff_id):
-    """approved -> voided. Returns False if the row is not approved."""
+def void(conn, guild_id, submission_id, staff_id):
+    """approved -> voided. Returns False if the row is not an approved row of this guild."""
     with conn:
         return conn.execute(
             "UPDATE submissions SET status = 'voided', reviewed_by = ?, reviewed_at = ? "
-            "WHERE id = ? AND status = 'approved'", (staff_id, now_iso(), submission_id)
+            "WHERE id = ? AND guild_id = ? AND status = 'approved'",
+            (staff_id, now_iso(), submission_id, guild_id)
         ).rowcount == 1
+
+
+def approved_for_day(conn, guild_id, day, limit=-1):
+    """Approved donations for a day, newest first."""
+    return conn.execute(
+        "SELECT * FROM submissions WHERE guild_id = ? AND day_utc = ? AND status = 'approved' "
+        "ORDER BY id DESC LIMIT ?", (guild_id, day, limit)).fetchall()
+
+
+def day_totals(conn, guild_id, day):
+    row = conn.execute(
+        "SELECT COUNT(*), COALESCE(SUM(amount), 0) FROM submissions "
+        "WHERE guild_id = ? AND day_utc = ? AND status = 'approved'", (guild_id, day)).fetchone()
+    return row[0], row[1]
+
+
+def get_igns(conn, guild_id):
+    return {r["discord_id"]: r["ign"] for r in
+            conn.execute("SELECT discord_id, ign FROM links WHERE guild_id = ?", (guild_id,))}
 
 
 def history(conn, guild_id, discord_id):
     return conn.execute(
         "SELECT * FROM submissions WHERE guild_id = ? AND discord_id = ? "
         "ORDER BY id DESC", (guild_id, discord_id)).fetchall()
+
+
+_CSV_COLUMNS = ("id", "day_utc", "discord_id", "discord_name", "ign", "amount", "status",
+                "logged_by", "reviewed_by", "created_at", "reviewed_at")
+
+
+def _safe_cell(value):
+    # a leading = + - @ makes Excel and Sheets run the cell as a formula
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
+
+
+def export_csv(conn, guild_id):
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(_CSV_COLUMNS)
+    for row in conn.execute("SELECT * FROM submissions WHERE guild_id = ? ORDER BY id", (guild_id,)):
+        writer.writerow([_safe_cell(row[c]) for c in _CSV_COLUMNS])
+    return out.getvalue()

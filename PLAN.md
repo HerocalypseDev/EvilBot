@@ -151,7 +151,7 @@ The index stops duplicates even if two presses overlap. A voided row does not bl
 | `/undo submission_id` | Staff | Sets approved donation to `voided`, refreshes board |
 | `/stop` | Staff | Posts downtime notice on panel, then shuts the bot down cleanly. |
 | `/log member [day]` | Staff | Records an approved 50,000 donation for a linked member. `day` = `today` (default) or `yesterday`. Refreshes board. |
-| `/history [member]` | Any member for self, staff for others | Lists donations (ephemeral). Members see only their own history. Staff can pass `member` to see another member's. |
+| `/history [member]` | Any member for self, staff for others | Lists donations 10 per page with Previous and Next buttons (ephemeral). Members see only their own history. Staff can pass `member` to see another member's. |
 | `/export` | Staff | Sends CSV of all submissions (ephemeral) |
 
 "Staff" = Manage Server, or `Officer` role.
@@ -170,7 +170,7 @@ Evil Donations — guild board
 Today (UTC): 12 donated
 Resets <t:…:t>  (shown in your local time)
 
-Last 8 donors
+Last 10 donors
 PlayerA — 50,000 coins
 ...
 
@@ -242,8 +242,9 @@ Runtime folder: `C:\EvilDonations\` (outside OneDrive). Source can stay in the p
 ```
 Discordbot/
 ├── bot.py                 # entry point, commands, views, 60 s loop (rollover, reminders, backup)
-├── db.py                  # SQLite schema and queries
-├── config.py              # .env reading, constants (donation amount, recent 8, role names, REMINDER_MINUTES)
+├── db.py                  # SQLite schema, queries, CSV export
+├── board.py               # board data, not-donated list, join_capped (no Discord imports, testable)
+├── config.py              # .env reading, constants (donation amount, recent 10, role names, REMINDER_MINUTES)
 ├── tests/
 │   ├── test_db.py         # constraints, status transitions
 │   ├── test_board.py      # not-donated list, yesterday totals, join_capped
@@ -262,7 +263,7 @@ Discordbot/
 ### Automated (pytest)
 - DB constraints: second approved row for same day rejected by index. Voided row does not block a new donation.
 - Status transitions: `approved → voided`. Voiding a voided or missing row is refused.
-- Board builder: last 8 ordering, not-donated list excludes donors, bots, and non-`ingame guild member` members. Yesterday totals sum correctly. `join_capped` adds `+N more`.
+- Board builder: last 10 ordering, not-donated list excludes donors, bots, and non-`ingame guild member` members. Yesterday totals sum correctly. `join_capped` adds `+N more`.
 - Reminders: targets exclude donors (approved), bots, and non-`ingame guild member` members. A reminder fires once (`reminders` PK). A late reminder writes the row and sends nothing. Lists over 50 split into multiple messages.
 
 ### Manual (test server)
@@ -270,7 +271,7 @@ Discordbot/
 2. Member with role, not linked, presses button → blocked message.
 3. `/link` works. Second member tries same name → refused.
 4. Linked member without the role presses button → blocked message.
-5. Linked member with the role presses button → logged 50,000, board shows donor in last 8, count +1.
+5. Linked member with the role presses button → logged 50,000, board shows donor in last 10, count +1.
 6. Same member presses again → "already logged".
 7. Officer runs `/log` for a linked member → same result, `logged_by` set.
 8. `/undo` → board updates, member can press the button again.
@@ -318,7 +319,7 @@ Order is fixed.
 - Screenshots, proof, and OCR.
 - Web dashboard.
 - Polls.
-- Per-player leaderboard beyond "last 8".
+- Per-player leaderboard beyond "last 10".
 - Guild XP tracking.
 - Multiple servers in practice (data model allows it).
 

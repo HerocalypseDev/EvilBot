@@ -54,16 +54,29 @@ def test_second_donation_same_day_refused(conn):
 
 def test_voided_does_not_block_new_donation(conn):
     first = donate(conn)
-    assert db.void(conn, first, staff_id=9)
+    assert db.void(conn, G, first, staff_id=9)
     donate(conn)
     assert [r["status"] for r in db.history(conn, G, A)] == ["approved", "voided"]
 
 
 def test_void_transitions(conn):
     sid = donate(conn)
-    assert db.void(conn, sid, 9) is True
-    assert db.void(conn, sid, 9) is False  # already voided
-    assert db.void(conn, 999, 9) is False  # missing
+    assert db.void(conn, G, sid, 9) is True
+    assert db.void(conn, G, sid, 9) is False  # already voided
+    assert db.void(conn, G, 999, 9) is False  # missing
+
+
+def test_void_other_guild_refused(conn):
+    sid = donate(conn)
+    assert db.void(conn, 2, sid, 9) is False
+    assert db.get_approved(conn, G, A, DAY)["id"] == sid
+
+
+def test_export_csv_escapes_formulas_and_keeps_unicode(conn):
+    db.record(conn, G, A, "=cmd()", "Zoë", DAY)
+    lines = db.export_csv(conn, G).splitlines()
+    assert lines[0].startswith("id,day_utc,discord_id")
+    assert "'=cmd()" in lines[1] and "Zoë" in lines[1]
 
 
 def test_log_marks_staff(conn):
