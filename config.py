@@ -2,6 +2,7 @@ import re
 from decimal import Decimal
 
 MAX_AMOUNT = 50_000
+DONATION_AMOUNT = MAX_AMOUNT
 RECENT_DONORS = 8
 MEMBER_ROLE_NAME = "ingame guild member"
 STAFF_ROLE_NAME = "Officer"
