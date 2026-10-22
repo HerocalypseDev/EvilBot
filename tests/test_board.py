@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 import db
-from board import board_data, data_sections, join_capped, short, next_reset_ts, not_donated, paginate
+from board import board_data, data_sections, day_lists, join_capped, short, next_reset_ts, not_donated, paginate
 
 G, DAY, YDAY = 1, "2026-10-22", "2026-10-21"
 
@@ -105,3 +105,12 @@ def test_join_capped_one_per_line():
     out = join_capped([f"name{i}" for i in range(500)], limit=100, sep="\n")
     assert len(out) <= 100 and out.splitlines()[-1].startswith("+") and out.endswith(" more")
     assert all(line.startswith("name") for line in out.splitlines()[:-1])
+
+
+def test_day_lists_splits_one_past_day():
+    conn = conn_with((1, "Alpha"), (2, "Beta"), (3, None))
+    db.record(conn, G, 1, "A", "Alpha", YDAY)
+    db.record(conn, G, 2, "B", "Beta", DAY)
+    donated, waiting = day_lists(conn, G, [(1, "A"), (2, "B"), (3, "C")], DAY)
+    assert [(name, ign) for name, ign, _ in donated] == [("B", "Beta")]
+    assert waiting == ["Alpha", "C (not linked)"]

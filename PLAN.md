@@ -181,7 +181,7 @@ The index stops duplicates even if two presses overlap. A voided row does not bl
 | `/data start channel` | Staff | Posts the data lists in a channel (section 18). |
 | `/data stop` | Staff | Stops updating the data channel. Its messages stay. |
 | `/log member [day]` | Staff | Records an approved 50,000 donation for a linked member. `day` = `today` (default) or `yesterday`. Refreshes board. |
-| `/history [member]` | Any member for self, staff for others | Lists donations 10 per page with Previous and Next buttons (ephemeral). Members see only their own history. Staff can pass `member` to see another member's. |
+| `/history [date]` | Any member | Shows one UTC day (`YYYY-MM-DD`, default today): donated and not donated, 15 rows per page with Previous and Next buttons (ephemeral). Same lists as the board. |
 | `/export` | Staff | Sends CSV of all submissions (ephemeral) |
 
 "Staff" = Manage Server, or `Officer` role.

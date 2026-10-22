@@ -225,27 +225,38 @@ class PanelView(discord.ui.View):
 
 
 class HistoryView(discord.ui.View):
-    """10 donations per page with Previous / Next buttons."""
+    """One UTC day: donated, then not donated, 15 rows per page with Previous / Next buttons."""
 
-    def __init__(self, name, rows):
+    def __init__(self, day, donated, waiting):
         super().__init__(timeout=300)
-        self.name, self.rows, self.page = name, rows, 0
+        self.day, self.page = day, 0
+        self.rows = ([("donated", f"{board.short(n)} · {board.short(i)} · <t:{t}:t>") for n, i, t in donated]
+                     + [("waiting", discord.utils.escape_markdown(n)) for n in waiting])
+        self.counts = (len(donated), len(waiting))
         self._update_buttons()
 
-    def text(self):
-        chunk, self.page, pages = board.paginate(self.rows, self.page)
-        lines = [f"#{r['id']}  {r['day_utc']}  {r['amount']:,}  {r['status']}" for r in chunk]
-        return f"**{self.name}**  page {self.page + 1}/{pages}\n" + "\n".join(lines)
+    def embed(self):
+        chunk, self.page, pages = board.paginate(self.rows, self.page, DATA_PAGE)  # also clamps self.page
+        donated = [text for kind, text in chunk if kind == "donated"]
+        waiting = [text for kind, text in chunk if kind == "waiting"]
+        embed = discord.Embed(title=f"Donations {self.day} (UTC)",
+                              description=f"Donated: **{self.counts[0]}** · Not donated: **{self.counts[1]}**")
+        if donated:
+            embed.add_field(name=f"Donated ({self.counts[0]})", value="\n".join(donated), inline=False)
+        if waiting:
+            embed.add_field(name=f"Not donated yet ({self.counts[1]})", value="\n".join(waiting), inline=False)
+        embed.set_footer(text=f"Page {self.page + 1}/{pages}")
+        return embed
 
     def _update_buttons(self):
-        pages = board.paginate(self.rows, self.page)[2]
+        pages = board.paginate(self.rows, self.page, DATA_PAGE)[2]
         self.previous.disabled = self.page <= 0
         self.next.disabled = self.page >= pages - 1
 
     async def _show(self, interaction):
-        text = self.text()  # also clamps self.page
+        embed = self.embed()
         self._update_buttons()
-        await interaction.response.edit_message(content=text, view=self)
+        await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(label="Previous")
     async def previous(self, interaction, button):
@@ -554,19 +565,22 @@ async def unlink(interaction: discord.Interaction, member: discord.User | None =
     await interaction.response.send_message(msg, ephemeral=True)
 
 
-@bot.tree.command(description="Show donation history.")
+@bot.tree.command(description="Show who donated and who has not on a day (UTC).")
 @app_commands.guild_only()
-async def history(interaction: discord.Interaction, member: discord.Member | None = None):
-    target = member or interaction.user
-    if target != interaction.user and not is_staff(interaction):
-        return await interaction.response.send_message(
-            "You can only see your own history.", ephemeral=True)
-    rows = db.history(bot.db, interaction.guild_id, target.id)
-    if not rows:
-        return await interaction.response.send_message(
-            f"No donations for {target.display_name}.", ephemeral=True)
-    view = HistoryView(target.display_name, rows)
-    await interaction.response.send_message(view.text(), view=view, ephemeral=True)
+@app_commands.describe(date="Day as YYYY-MM-DD. Default: today (UTC).")
+async def history(interaction: discord.Interaction, date: str | None = None):
+    try:
+        day = datetime.strptime(date, "%Y-%m-%d").date().isoformat() if date else db.today_utc()
+    except ValueError:
+        return await interaction.response.send_message("Use the date as YYYY-MM-DD, e.g. 2026-10-21.",
+                                                       ephemeral=True)
+    row = db.get_guild(bot.db, interaction.guild_id)
+    if not row:
+        return await interaction.response.send_message("Run /setup first.", ephemeral=True)
+    donated, waiting = board.day_lists(bot.db, interaction.guild_id,
+                                       tracked_members(interaction.guild, row["member_role_id"]), day)
+    view = HistoryView(day, donated, waiting)
+    await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
 
 
 @bot.tree.command(name="log", description="Staff: log a donation for a member.")
@@ -592,7 +606,7 @@ async def log_donation(interaction: discord.Interaction, member: discord.Member,
     await refresh_board(interaction.guild)
 
 
-@bot.tree.command(description="Staff: cancel a donation by its id (see /history or /export).")
+@bot.tree.command(description="Staff: cancel a donation by its id (see /export).")
 @app_commands.guild_only()
 async def undo(interaction: discord.Interaction, submission_id: int):
     if not await require_staff(interaction):

@@ -65,6 +65,13 @@ def data_sections(conn, guild_id, tracked, today):
     }
 
 
+def day_lists(conn, guild_id, tracked, day):
+    """For /history. Returns (donated as (discord name, in-game name, unix time), not donated as board names)."""
+    donated = [(r["discord_name"], r["ign"], int(datetime.fromisoformat(r["created_at"]).timestamp()))
+               for r in db.approved_for_day(conn, guild_id, day)]
+    return donated, [name for _, name in not_donated(conn, guild_id, tracked, day)]
+
+
 def board_data(conn, guild_id, tracked, today, yesterday, now=None):
     today_rows = db.approved_for_day(conn, guild_id, today)
     y_count, y_coins = db.day_totals(conn, guild_id, yesterday)
