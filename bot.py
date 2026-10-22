@@ -440,6 +440,7 @@ async def setup(interaction: discord.Interaction, panel_channel: discord.TextCha
         return await interaction.response.send_message(
             f"Create a role named `{MEMBER_ROLE_NAME}` first.", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
+    old = db.get_guild(bot.db, interaction.guild_id)
     try:
         status = await panel_channel.send(embed=discord.Embed(description="Loading board..."),
                                           view=PanelView())
@@ -447,6 +448,12 @@ async def setup(interaction: discord.Interaction, panel_channel: discord.TextCha
         return await interaction.followup.send(
             f"Could not post in {panel_channel.mention}: {e}\nGive the bot View Channel, Send Messages "
             "and Embed Links there, then run /setup again.", ephemeral=True)
+    old_channel = old and old["status_message_id"] and interaction.guild.get_channel(old["panel_channel_id"])
+    if old_channel:  # remove the board from an earlier /setup, or it lingers and never updates
+        try:
+            await old_channel.get_partial_message(old["status_message_id"]).delete()
+        except discord.HTTPException:
+            pass
     db.save_guild(bot.db, interaction.guild_id, panel_channel_id=panel_channel.id,
                   status_message_id=status.id,
                   officer_role_id=officer_role.id, member_role_id=member_role.id)
