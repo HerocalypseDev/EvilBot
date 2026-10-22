@@ -440,8 +440,13 @@ async def setup(interaction: discord.Interaction, panel_channel: discord.TextCha
         return await interaction.response.send_message(
             f"Create a role named `{MEMBER_ROLE_NAME}` first.", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
-    status = await panel_channel.send(embed=discord.Embed(description="Loading board..."),
-                                      view=PanelView())
+    try:
+        status = await panel_channel.send(embed=discord.Embed(description="Loading board..."),
+                                          view=PanelView())
+    except discord.HTTPException as e:
+        return await interaction.followup.send(
+            f"Could not post in {panel_channel.mention}: {e}\nGive the bot View Channel, Send Messages "
+            "and Embed Links there, then run /setup again.", ephemeral=True)
     db.save_guild(bot.db, interaction.guild_id, panel_channel_id=panel_channel.id,
                   status_message_id=status.id,
                   officer_role_id=officer_role.id, member_role_id=member_role.id)
@@ -617,8 +622,13 @@ async def boss_start(interaction: discord.Interaction, channel: discord.TextChan
         return await interaction.response.send_message("Run /setup first.", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
     db.save_guild(bot.db, interaction.guild_id, boss_channel_id=channel.id)
-    await boss_tick(interaction.guild, db.get_guild(bot.db, interaction.guild_id),
-                    datetime.now(timezone.utc))
+    try:
+        await boss_tick(interaction.guild, db.get_guild(bot.db, interaction.guild_id),
+                        datetime.now(timezone.utc))
+    except discord.HTTPException as e:
+        return await interaction.followup.send(
+            f"Could not post in {channel.mention}: {e}\nGive the bot View Channel, Send Messages, "
+            "Add Reactions and Read Message History there, then run /boss start again.", ephemeral=True)
     await interaction.followup.send(f"Boss polls started in {channel.mention}.", ephemeral=True)
 
 
