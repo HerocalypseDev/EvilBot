@@ -389,6 +389,9 @@ async def _boss_tick(guild, row, now):
         log.info("Boss ping for %s in guild %s, votes %s", times[pick].isoformat(), guild.id, votes)
 
 
+_backup_failed_day = None
+
+
 @tasks.loop(seconds=60)
 async def tick():
     """Every minute: refresh the board on a new UTC day, send due reminders, write the daily backup."""
@@ -423,7 +426,10 @@ async def tick():
                                  os.getenv("ONEDRIVE_BACKUP_DIR")):
                 log.info("Backup written for %s", today)
         except Exception:
-            log.exception("backup failed")
+            global _backup_failed_day
+            if _backup_failed_day != today:  # once a day: a full traceback every minute floods the log
+                _backup_failed_day = today
+                log.exception("Backup failed (retrying every minute, logged once a day)")
 
 
 @tick.before_loop
