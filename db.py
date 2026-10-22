@@ -9,12 +9,10 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS guilds (
     guild_id          INTEGER PRIMARY KEY,
     panel_channel_id  INTEGER,
-    panel_message_id  INTEGER,
     status_message_id INTEGER,
     officer_role_id   INTEGER,
     member_role_id    INTEGER,
-    board_day         TEXT,
-    backup_day        TEXT
+    board_day         TEXT
 );
 CREATE TABLE IF NOT EXISTS links (
     guild_id   INTEGER NOT NULL,
@@ -82,8 +80,8 @@ def connect(path):
 
 # --- guild config ---
 
-GUILD_FIELDS = {"panel_channel_id", "panel_message_id", "status_message_id", "officer_role_id",
-                "member_role_id", "board_day", "backup_day"}
+GUILD_FIELDS = {"panel_channel_id", "status_message_id", "officer_role_id",
+                "member_role_id", "board_day"}
 
 
 def save_guild(conn, guild_id, **fields):
@@ -101,6 +99,16 @@ def save_guild(conn, guild_id, **fields):
 
 def get_guild(conn, guild_id):
     return conn.execute("SELECT * FROM guilds WHERE guild_id = ?", (guild_id,)).fetchone()
+
+
+# --- reminders ---
+
+def mark_reminder(conn, guild_id, day, minutes_before):
+    """Claim a reminder slot. True only the first time, so a restart never double-sends."""
+    with conn:
+        return conn.execute(
+            "INSERT OR IGNORE INTO reminders VALUES (?, ?, ?, ?)",
+            (guild_id, day, minutes_before, now_iso())).rowcount == 1
 
 
 # --- links ---

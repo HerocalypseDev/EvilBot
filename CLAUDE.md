@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Project: Discord bot. Stack: JavaScript / Node.js.
+Project: Discord bot. Stack: Python (discord.py, SQLite, pytest).
 
 ## Before changing code
 

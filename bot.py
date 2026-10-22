@@ -1,17 +1,23 @@
+import asyncio
 import io
 import logging
 import os
+from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
+load_dotenv()  # before importing config: it reads REMINDER_MINUTES from the environment
+
+import backup
 import board
 import db
-from config import DONATION_AMOUNT, MEMBER_ROLE_NAME, RECENT_DONORS
+import reminders
+from config import (BACKUP_HOUR_UTC, DONATION_AMOUNT, MEMBER_ROLE_NAME, RECENT_DONORS,
+                    REMINDER_MINUTES)
 
-load_dotenv()
 log = logging.getLogger("evil")
 
 intents = discord.Intents.default()
@@ -50,21 +56,36 @@ def board_embed(data):
     embed.add_field(name="Yesterday (UTC)",
                     value=f"Donated: {data['yesterday_count']} · Coins: {data['yesterday_coins']:,}",
                     inline=False)
+    embed.set_footer(text="Press Log donation once per day, after you donate in the game.")
     return embed
 
 
+_board_lock = asyncio.Lock()  # two quick refreshes must not post two boards
+
+
 async def refresh_board(guild):
-    row = db.get_guild(bot.db, guild.id)
-    channel = row and guild.get_channel(row["panel_channel_id"])
-    if not channel or not row["status_message_id"]:
-        return
-    data = board.board_data(bot.db, guild.id, tracked_members(guild, row["member_role_id"]),
-                            db.today_utc(), db.yesterday_utc())
-    try:
-        await channel.get_partial_message(row["status_message_id"]).edit(
-            content=None, embed=board_embed(data))
-    except discord.HTTPException as e:
-        log.warning("Board refresh failed in guild %s: %s", guild.id, e)
+    """Update the board. If something was posted below it, move it to the bottom of the channel."""
+    async with _board_lock:
+        row = db.get_guild(bot.db, guild.id)
+        channel = row and guild.get_channel(row["panel_channel_id"])
+        if not channel or not row["status_message_id"]:
+            return
+        data = board.board_data(bot.db, guild.id, tracked_members(guild, row["member_role_id"]),
+                                db.today_utc(), db.yesterday_utc())
+        embed = board_embed(data)
+        old = channel.get_partial_message(row["status_message_id"])
+        try:
+            if channel.last_message_id == old.id:
+                await old.edit(embed=embed)
+            else:
+                try:
+                    await old.delete()
+                except discord.NotFound:
+                    pass
+                new = await channel.send(embed=embed, view=PanelView())
+                db.save_guild(bot.db, guild.id, status_message_id=new.id)
+        except discord.HTTPException as e:
+            log.warning("Board refresh failed in guild %s: %s", guild.id, e)
 
 
 class PanelView(discord.ui.View):
@@ -136,9 +157,63 @@ class Bot(commands.Bot):
     async def setup_hook(self):
         self.add_view(PanelView())  # keeps the panel button working after a restart
         await self.tree.sync()
+        tick.start()
 
 
 bot = Bot()
+
+
+async def send_reminder(guild, row):
+    waiting = board.not_donated(bot.db, guild.id, tracked_members(guild, row["member_role_id"]),
+                                db.today_utc())
+    channel = guild.get_channel(row["panel_channel_id"])
+    if not channel or not waiting:
+        return
+    reset = board.next_reset_ts()
+    for group in reminders.chunks([i for i, _ in waiting]):
+        await channel.send(f"Donation reminder: daily reset <t:{reset}:R>.\n"
+                           + " ".join(f"<@{i}>" for i in group))
+    await refresh_board(guild)  # the reminder pushed the board up: move it back to the bottom
+
+
+@tasks.loop(seconds=60)
+async def tick():
+    """Every minute: refresh the board on a new UTC day, send due reminders, write the daily backup."""
+    now = datetime.now(timezone.utc)
+    today = now.date().isoformat()
+    for guild in bot.guilds:
+        row = db.get_guild(bot.db, guild.id)
+        if not row:
+            continue
+        try:
+            if row["board_day"] != today:
+                await refresh_board(guild)
+                db.save_guild(bot.db, guild.id, board_day=today)
+                log.info("Board refreshed for new day %s in guild %s", today, guild.id)
+            if not guild.get_role(row["member_role_id"]):
+                log.warning("Role %s missing in guild %s: no reminders", MEMBER_ROLE_NAME, guild.id)
+                continue
+            for minutes in REMINDER_MINUTES:
+                action = reminders.reminder_action(now, minutes)
+                # the slot is claimed before sending, so a restart never double-sends
+                if action != "wait" and db.mark_reminder(bot.db, guild.id, today, minutes):
+                    if action == "send":
+                        await send_reminder(guild, row)
+                        log.info("Sent %s-minute reminder in guild %s", minutes, guild.id)
+        except Exception:
+            log.exception("tick failed for guild %s", guild.id)
+    if now.hour >= BACKUP_HOUR_UTC:
+        try:
+            if backup.run_backup(bot.db, today, os.getenv("BACKUP_DIR", "backups"),
+                                 os.getenv("ONEDRIVE_BACKUP_DIR")):
+                log.info("Backup written for %s", today)
+        except Exception:
+            log.exception("backup failed")
+
+
+@tick.before_loop
+async def before_tick():
+    await bot.wait_until_ready()
 
 
 @bot.tree.command(description="Post the donation panel in a channel.")
@@ -152,11 +227,10 @@ async def setup(interaction: discord.Interaction, panel_channel: discord.TextCha
         return await interaction.response.send_message(
             f"Create a role named `{MEMBER_ROLE_NAME}` first.", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
-    panel = await panel_channel.send("**Evil Donations**\nPress the button to log today's donation.",
-                                     view=PanelView())
-    status = await panel_channel.send("Loading board...")
+    status = await panel_channel.send(embed=discord.Embed(description="Loading board..."),
+                                      view=PanelView())
     db.save_guild(bot.db, interaction.guild_id, panel_channel_id=panel_channel.id,
-                  panel_message_id=panel.id, status_message_id=status.id,
+                  status_message_id=status.id,
                   officer_role_id=officer_role.id, member_role_id=member_role.id)
     await refresh_board(interaction.guild)
     await interaction.followup.send(f"Panel posted in {panel_channel.mention}.", ephemeral=True)
@@ -263,4 +337,5 @@ if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN")
     if not token:
         raise SystemExit("DISCORD_TOKEN missing. Put it in .env.")
-    bot.run(token)
+    discord.utils.setup_logging(level=logging.INFO, root=True)  # also shows our own log lines
+    bot.run(token, log_handler=None)

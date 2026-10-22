@@ -30,7 +30,7 @@ A Discord bot for a game guild. Each member donates 50,000 coins per day in the 
 | Status board | Auto-updated embed. See section 7. Uses in-game names only. |
 | History | Kept forever, including members who leave the server. |
 | Export | CSV via `/export`, opens in Excel or Google Sheets. |
-| Downtime notice | On a graceful stop (`/stop` or Ctrl+C in bot window), bot edits the panel message to "Bot offline. Do not log donations. Contact an officer." and removes the button. On start, bot restores the panel with the button. Crashes and power loss cannot post a notice. |
+| Downtime notice | On a graceful stop (`/stop` or Ctrl+C in bot window), bot edits the board message to "Bot offline. Do not log donations. Contact an officer." and removes the button. On start, bot restores the board with the button. Crashes and power loss cannot post a notice. |
 | Staff log | Officer can log a donation for a linked member with `/log`. Logged row is `approved`, `logged_by` set to staff. Same one-per-day rule applies. Day defaults to today UTC; yesterday allowed for late entries. Used after downtime: member tells an officer, officer logs it once the bot is back. |
 
 Guild XP is not tracked. No XP column, no XP calculation, no starting XP.
@@ -76,12 +76,10 @@ Four tables. Every row carries `guild_id`. Cheap insurance even though only one 
 |---|---|---|
 | guild_id | INTEGER PK | Discord guild id |
 | panel_channel_id | INTEGER | Donation button, status board, and reset reminders |
-| panel_message_id | INTEGER | Button message |
-| status_message_id | INTEGER | Status board message (edited in place) |
+| status_message_id | INTEGER | Board message: embed plus the "Log donation" button. Edited in place, or reposted at the bottom (section 7). |
 | officer_role_id | INTEGER | Staff role `Officer` |
 | member_role_id | INTEGER | Role `ingame guild member`, looked up by name at `/setup` |
 | board_day | TEXT NULL | UTC day the board was last refreshed for rollover |
-| backup_day | TEXT NULL | UTC day the last backup was written |
 
 ### `links`
 | Column | Type | Notes |
@@ -139,13 +137,14 @@ The index stops duplicates even if two presses overlap. A voided row does not bl
    - Bot permissions: View Channels, Send Messages, Embed Links, Read Message History
 5. Invite to the **test server** first. Repeat for the live server at rollout.
 6. In the server, create roles `ingame guild member` and `Officer` (exact names, used for lookup).
+7. Make the panel channel read-only: channel settings → Permissions → `@everyone`: Send Messages **off**, Use Application Commands **on**. Add the Evil Donations bot there with Send Messages and Embed Links **on**.
 
 ## 7. Commands and UI
 
 ### Slash commands
 | Command | Who | What it does |
 |---|---|---|
-| `/setup panel_channel officer_role` | Manage Server | Saves config, finds role `ingame guild member`, posts panel and board. Fails with a clear message if `ingame guild member` is missing. |
+| `/setup panel_channel officer_role` | Manage Server | Saves config, finds role `ingame guild member`, posts the board with its button. Fails with a clear message if `ingame guild member` is missing. |
 | `/link ign` | Any member | Links Discord user to in-game name |
 | `/unlink [member]` | Self, or staff for others | Removes link |
 | `/undo submission_id` | Staff | Sets approved donation to `voided`, refreshes board |
@@ -157,13 +156,13 @@ The index stops duplicates even if two presses overlap. A voided row does not bl
 "Staff" = Manage Server, or `Officer` role.
 
 ### Buttons
-- **Panel message** (persistent): "Log donation" button.
+- **Board message** (persistent): the board embed with a "Log donation" button under it.
   - Only members with role `ingame guild member` can press it. Others get a message.
   - Blocked with message if member is not linked.
   - Blocked with message if member already has an approved donation today.
   - Otherwise records an approved 50,000 donation for today, replies privately ("Logged 50,000 for today."), and refreshes the board.
 
-### Status board (single message, edited in place)
+### Status board (single message with the button)
 ```
 Evil Donations — guild board
 
@@ -181,7 +180,9 @@ Yesterday (UTC)
 Donated: 31 · Coins: 1,550,000
 ```
 
-Refresh triggers: button press, `/log`, undo, setup, and day rollover (section 9).
+Refresh triggers: button press, `/log`, undo, setup, reminders sent, and day rollover (section 9).
+
+**Always at the bottom:** on each refresh, if the board is not the last message in the panel channel, the bot deletes it and posts a fresh copy (embed and button) at the bottom. Otherwise it edits in place. The panel channel should be read-only for members (see section 6) so only the bot posts there. Slash commands and the button still work in a read-only channel.
 
 Board names are in-game names only. A tracked member without a link appears as `Discord name (not linked)`.
 
@@ -213,7 +214,7 @@ Board names are in-game names only. A tracked member without a link appears as `
 - Maximum three reminder messages per day, one per offset.
 
 ### Daily backup
-- At 04:00 UTC, the same 60-second loop writes a backup with `sqlite3.Connection.backup()` to `C:\EvilDonations\backups\donations-YYYY-MM-DD.db`, then copies it to the OneDrive backup folder (section 13). `backup_day` prevents a second run the same day.
+- At 04:00 UTC, the same 60-second loop writes a backup with `sqlite3.Connection.backup()` to `C:\EvilDonations\backups\donations-YYYY-MM-DD.db`, then copies it to the OneDrive backup folder (section 13). The loop only writes a file that does not exist yet, so it runs once a day and also catches up if the bot was off at 04:00.
 - Prunes local and OneDrive copies older than 30 days.
 
 ## 10. Error handling and edge cases
@@ -243,10 +244,13 @@ Runtime folder: `C:\EvilDonations\` (outside OneDrive). Source can stay in the p
 Discordbot/
 ├── bot.py                 # entry point, commands, views, 60 s loop (rollover, reminders, backup)
 ├── db.py                  # SQLite schema, queries, CSV export
-├── board.py               # board data, not-donated list, join_capped (no Discord imports, testable)
+├── board.py               # board data, not-donated list, join_capped, paginate (no Discord imports, testable)
+├── reminders.py           # reminder window check, 50-per-message split
+├── backup.py              # daily SQLite backup, copy to OneDrive, 30-day prune
 ├── config.py              # .env reading, constants (donation amount, recent 10, role names, REMINDER_MINUTES)
 ├── tests/
-│   ├── test_db.py         # constraints, status transitions
+│   ├── test_db.py         # constraints, status transitions, CSV export
+│   ├── test_backup.py     # backup copy, once-a-day, prune
 │   ├── test_board.py      # not-donated list, yesterday totals, join_capped
 │   └── test_reminders.py  # reminder targets, window check, 50-per-message split
 ├── scripts/
@@ -295,7 +299,7 @@ Discordbot/
 4. **Restart loop:** `scripts/run_bot.ps1` runs `venv\Scripts\python.exe bot.py` in a loop. On crash (nonzero exit), wait 5 seconds and start it again. On clean exit from `/stop` (exit code 0), the loop ends and the bot stays off until started by hand or at next logon. Logs go to `C:\EvilDonations\logs\bot.log` (rotated by size, plain text).
 5. **Backups:** Built into the bot (section 9). Copies land in `C:\EvilDonations\backups\` and in the OneDrive backup folder. OneDrive is the off-PC copy.
 6. **Test one restore** on the PC: stop the bot, copy a backup over a scratch `donations-test.db`, open it, count rows, compare to the live DB. Then delete the scratch file.
-7. **Updates:** stop the bot with `/stop` (posts downtime notice first), copy or `git pull`, `pip install -r requirements.txt`, start the bot again (it restores the panel button on start).
+7. **Updates:** stop the bot with `/stop` (posts downtime notice first), copy or `git pull`, `pip install -r requirements.txt`, start the bot again (it restores the board button on start).
 8. **Secrets:** rotate bot token if exposed (Developer Portal → Reset Token), then update `.env`.
 
 ## 14. Milestones
