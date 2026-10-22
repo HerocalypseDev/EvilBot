@@ -330,16 +330,16 @@ async def count_votes(guild, channel, message_id, role_id):
     votes = [0] * boss.SLOTS
     try:
         message = await channel.fetch_message(message_id)
-    except discord.NotFound:
-        log.warning("Boss poll message %s was deleted: counting no votes", message_id)
-        return votes
-    for reaction in message.reactions:
-        if str(reaction.emoji) in boss.EMOJIS:
-            index = boss.EMOJIS.index(str(reaction.emoji))
-            async for user in reaction.users():
-                member = guild.get_member(user.id)
-                if member and not member.bot and member.get_role(role_id):
-                    votes[index] += 1
+        for reaction in message.reactions:
+            if str(reaction.emoji) in boss.EMOJIS:
+                index = boss.EMOJIS.index(str(reaction.emoji))
+                async for user in reaction.users():
+                    member = guild.get_member(user.id)
+                    if member and not member.bot and member.get_role(role_id):
+                        votes[index] += 1
+    except discord.HTTPException as e:  # deleted, or no access: still ping, as if nobody voted
+        log.warning("Cannot read boss poll %s (%s): counting no votes", message_id, e)
+        return [0] * boss.SLOTS
     return votes
 
 
