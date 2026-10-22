@@ -69,3 +69,16 @@ def test_boss_poll_rows_resolve_once():
     assert db.resolve_boss_poll(conn, 1, C.isoformat(), at(14).isoformat()) is True
     assert db.resolve_boss_poll(conn, 1, C.isoformat(), at(15).isoformat()) is False
     assert db.latest_boss_poll(conn, 1)["resolved_time"] == at(14).isoformat()
+
+
+def test_next_action_whole_cycle():
+    from boss import next_action
+    assert next_action(None, at(10, 30)) == ("post", at(12))  # first poll: next spawn
+    assert next_action((C, None), at(11, 0)) == ("wait", None)  # more than 10 min before 12:00
+    assert next_action((C, None), at(11, 50)) == ("count", None)
+    assert next_action((C, None), at(12, 30)) == ("wait", None)  # 13:00 window not open yet
+    assert next_action((C, None), at(12, 50)) == ("count", None)
+    assert next_action((C, None), at(17, 0)) == ("end", at(17))  # all times passed, no ping
+    assert next_action((C, at(14)), at(14, 4)) == ("wait", None)  # pinged 14:00, wait 5 min
+    assert next_action((C, at(14)), at(14, 5)) == ("post", at(18))
+    assert next_action((C, at(14)), at(23, 30)) == ("post", at(0, day=23))  # bot was off: skip 18:00

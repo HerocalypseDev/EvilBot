@@ -362,20 +362,18 @@ async def _boss_tick(guild, row, now):
         log.warning("Boss channel or role missing in guild %s", guild.id)
         return
     latest = db.latest_boss_poll(bot.db, guild.id)
-    if latest is None:
-        return await post_boss_poll(guild, channel, role.id, boss.next_cycle_start(now))
-    cycle = iso_utc(latest["cycle_start"])
-    if latest["resolved_time"]:
-        if now >= iso_utc(latest["resolved_time"]) + boss.NEXT_POLL_DELAY:
-            await post_boss_poll(guild, channel, role.id, boss.upcoming_cycle(cycle + boss.CYCLE, now))
+    state = latest and (iso_utc(latest["cycle_start"]),
+                        latest["resolved_time"] and iso_utc(latest["resolved_time"]))
+    action, when = boss.next_action(state, now)
+    if action == "post":
+        return await post_boss_poll(guild, channel, role.id, when)
+    if action == "end":
+        db.resolve_boss_poll(bot.db, guild.id, latest["cycle_start"], when.isoformat())
         return
+    if action == "wait":
+        return
+    cycle = state[0]
     times = boss.slot_times(cycle)
-    ahead = [t for t in times if t > now]
-    if not ahead:  # every time passed without a ping
-        db.resolve_boss_poll(bot.db, guild.id, latest["cycle_start"], times[-1].isoformat())
-        return
-    if now < ahead[0] - boss.LEAD:  # no ping can be due yet, so skip counting votes
-        return
     votes = await count_votes(guild, channel, latest["message_id"], role.id)
     pick = boss.pick_ping(now, cycle, votes)
     # the slot is claimed before sending, so a restart never double-pings

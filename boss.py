@@ -25,6 +25,28 @@ def upcoming_cycle(after, now):
     return start
 
 
+def next_action(latest, now):
+    """What the boss loop does now. latest = (cycle_start, resolved_time or None) of the newest poll,
+    or None if there is none. Returns one of:
+    ("post", cycle_start)  post a new poll for that cycle
+    ("end", last_time)     every time passed with no ping: close the poll
+    ("count", None)        a ping may be due: count the votes and call pick_ping
+    ("wait", None)         nothing to do yet"""
+    if latest is None:
+        return "post", next_cycle_start(now)
+    cycle, resolved = latest
+    if resolved:
+        if now >= resolved + NEXT_POLL_DELAY:
+            return "post", upcoming_cycle(cycle + CYCLE, now)
+        return "wait", None
+    ahead = [t for t in slot_times(cycle) if t > now]
+    if not ahead:
+        return "end", slot_times(cycle)[-1]
+    if now < ahead[0] - LEAD:  # no ping can be due yet, so skip counting votes
+        return "wait", None
+    return "count", None
+
+
 def pick_ping(now, cycle_start, votes):
     """Index of the time to ping about right now, or None. Only times still ahead can win. The most
     votes wins, the earliest on a tie (so with no votes the first time ahead). The ping is due
