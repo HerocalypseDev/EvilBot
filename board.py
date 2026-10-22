@@ -1,7 +1,14 @@
 from datetime import datetime, timedelta, timezone
 
+from discord.utils import escape_markdown
+
 import db
 from config import RECENT_DONORS
+
+
+def short(text, width=16):
+    """Cut to `width` characters, then escape markdown. Cutting after escaping could leave a stray backslash."""
+    return escape_markdown(text if len(text) <= width else text[:width - 1] + "…")
 
 
 def join_capped(names, limit=1000):

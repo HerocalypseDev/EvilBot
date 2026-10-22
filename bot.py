@@ -48,11 +48,6 @@ def tracked_members(guild, member_role_id):
     return [(m.id, m.display_name) for m in role.members if not m.bot] if role else []
 
 
-def short(text):
-    text = discord.utils.escape_markdown(text)
-    return text if len(text) <= 16 else text[:15] + "…"
-
-
 def board_embed(data):
     embed = discord.Embed(
         title="Evil Donations — guild board",
@@ -60,13 +55,14 @@ def board_embed(data):
                     f"Resets <t:{data['reset_ts']}:t> (your local time)")
     if data["recent"]:  # three inline fields line up as columns: one row per donor
         embed.add_field(name=f"Discord name (last {RECENT_DONORS})",
-                        value="\n".join(short(name) for name, _, _ in data["recent"]))
-        embed.add_field(name="In-game name", value="\n".join(short(ign) for _, ign, _ in data["recent"]))
+                        value="\n".join(board.short(name) for name, _, _ in data["recent"]))
+        embed.add_field(name="In-game name", value="\n".join(board.short(ign) for _, ign, _ in data["recent"]))
         embed.add_field(name="Donated at", value="\n".join(f"<t:{ts}:t>" for _, _, ts in data["recent"]))
     else:
         embed.add_field(name=f"Last {RECENT_DONORS} donors", value="Nobody yet.", inline=False)
     embed.add_field(name=f"Not donated yet ({len(data['waiting'])})",
-                    value=board.join_capped(data["waiting"]) or "Everyone has donated.", inline=False)
+                    value=board.join_capped([discord.utils.escape_markdown(n) for n in data["waiting"]])
+                    or "Everyone has donated.", inline=False)
     embed.add_field(name="Yesterday (UTC)",
                     value=f"Donated: {data['yesterday_count']} · Coins: {data['yesterday_coins']:,}",
                     inline=False)
@@ -109,7 +105,7 @@ def data_section_embed(guild_id, key, rows):
     embed = discord.Embed(title=f"{title} ({len(rows)})")
     if chunk:
         for n, column in enumerate(columns):
-            values = [f"<t:{row[n]}:t>" if column == "Donated at" else short(row[n]) for row in chunk]
+            values = [f"<t:{row[n]}:t>" if column == "Donated at" else board.short(row[n]) for row in chunk]
             embed.add_field(name=column, value="\n".join(values))
     else:
         embed.description = "Nobody."

@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 import db
-from board import board_data, data_sections, join_capped, next_reset_ts, not_donated, paginate
+from board import board_data, data_sections, join_capped, short, next_reset_ts, not_donated, paginate
 
 G, DAY, YDAY = 1, "2026-10-22", "2026-10-21"
 
@@ -90,3 +90,11 @@ def test_data_sections_split_the_guild_three_ways():
 def test_data_sections_empty_guild():
     conn = conn_with()
     assert data_sections(conn, G, [], DAY) == {"donated": [], "not_donated": [], "not_linked": []}
+
+
+def test_short_cuts_then_escapes():
+    assert short("Alpha") == "Alpha"
+    assert short("a" * 16) == "a" * 16
+    assert short("a" * 17) == "a" * 15 + "…"
+    assert short("abcdefghijklmn_xyz") == r"abcdefghijklmn\_…"  # cut first: no stray backslash
+    assert short("*bold*") == r"\*bold\*"
