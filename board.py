@@ -11,18 +11,18 @@ def short(text, width=16):
     return escape_markdown(text if len(text) <= width else text[:width - 1] + "…")
 
 
-def join_capped(names, limit=1000):
-    """Join names with commas; if too long, cut and add '+N more'. limit = Discord field cap."""
-    text = ", ".join(names)
+def join_capped(names, limit=1000, sep=", "):
+    """Join names with `sep`; if too long, cut and add '+N more'. limit = Discord field cap."""
+    text = sep.join(names)
     if len(text) <= limit:
         return text
     shown = []
     for name in names:
-        suffix = f" +{len(names) - len(shown) - 1} more"
-        if len(", ".join([*shown, name])) + len(suffix) > limit:
+        suffix = f"{sep}+{len(names) - len(shown) - 1} more"
+        if len(sep.join([*shown, name])) + len(suffix) > limit:
             break
         shown.append(name)
-    return f"{', '.join(shown)} +{len(names) - len(shown)} more"
+    return f"{sep.join(shown)}{sep}+{len(names) - len(shown)} more" if shown else f"+{len(names)} more"
 
 
 def paginate(items, page, size=10):

@@ -98,3 +98,10 @@ def test_short_cuts_then_escapes():
     assert short("a" * 17) == "a" * 15 + "…"
     assert short("abcdefghijklmn_xyz") == r"abcdefghijklmn\_…"  # cut first: no stray backslash
     assert short("*bold*") == r"\*bold\*"
+
+
+def test_join_capped_one_per_line():
+    assert join_capped(["Ann", "Bob (not linked)"], sep="\n") == "Ann\nBob (not linked)"
+    out = join_capped([f"name{i}" for i in range(500)], limit=100, sep="\n")
+    assert len(out) <= 100 and out.splitlines()[-1].startswith("+") and out.endswith(" more")
+    assert all(line.startswith("name") for line in out.splitlines()[:-1])

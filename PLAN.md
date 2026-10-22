@@ -205,7 +205,10 @@ DiscordA                 PlayerA         14:05      (three side-by-side columns,
 ...                                                  time shown in each viewer's own time zone)
 
 Not donated yet (9)
-PlayerX, PlayerY, PlayerZ, ...
+PlayerX
+PlayerY
+DiscordName (not linked)
+...                       (one per line, "+N more" if it no longer fits)
 
 Yesterday (UTC)
 Donated: 31 · Coins: 1,550,000

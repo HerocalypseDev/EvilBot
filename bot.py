@@ -61,7 +61,8 @@ def board_embed(data):
     else:
         embed.add_field(name=f"Last {RECENT_DONORS} donors", value="Nobody yet.", inline=False)
     embed.add_field(name=f"Not donated yet ({len(data['waiting'])})",
-                    value=board.join_capped([discord.utils.escape_markdown(n) for n in data["waiting"]])
+                    value=board.join_capped([discord.utils.escape_markdown(n) for n in data["waiting"]],
+                                            sep="\n")  # one name per line
                     or "Everyone has donated.", inline=False)
     embed.add_field(name="Yesterday (UTC)",
                     value=f"Donated: {data['yesterday_count']} · Coins: {data['yesterday_coins']:,}",
