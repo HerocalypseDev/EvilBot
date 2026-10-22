@@ -16,15 +16,44 @@ def donate(conn, member=A, day=DAY, **kw):
 
 
 def test_link_rules(conn):
-    assert db.link(conn, G, A, " Dragon ") == "Dragon"
+    db.roster_add(conn, G, ["Dragon", "Other"])
+    assert db.link(conn, G, A, " dragon ") == "Dragon"  # roster spelling is stored
     with pytest.raises(db.AlreadyLinked):
         db.link(conn, G, A, "Other")
     with pytest.raises(db.IgnTaken):
-        db.link(conn, G, B, "dragon")  # unique ignoring case
-    with pytest.raises(ValueError):
-        db.link(conn, G, B, "x")
+        db.link(conn, G, B, "DRAGON")  # taken, ignoring case
+    with pytest.raises(db.NotInRoster):
+        db.link(conn, G, B, "Nobody")
     assert db.unlink(conn, G, A)
     db.link(conn, G, B, "Dragon")
+
+
+def test_parse_names():
+    assert db.parse_names("Ann, bob\nC,  ann ,, Dee ") == (["Ann", "bob", "Dee"], ["C"])
+    assert db.roster_names(db.connect(":memory:"), 1, "a!b") == []  # ! in a search is plain text
+    assert db.parse_names("") == ([], [])
+    assert db.parse_names("x" * 33) == ([], ["x" * 33])
+
+
+def test_roster_add_remove_and_search(conn):
+    assert db.roster_add(conn, G, ["Ann", "Bob_1", "Cyd"]) == 3
+    assert db.roster_add(conn, G, ["ann", "Dee"]) == 1  # "ann" already there
+    assert db.roster_names(conn, G) == ["Ann", "Bob_1", "Cyd", "Dee"]
+    assert db.roster_names(conn, G, "B") == ["Bob_1"]
+    assert db.roster_names(conn, G, "_") == ["Bob_1"]  # _ is not a wildcard
+    assert db.roster_names(conn, G, "%") == []
+    db.link(conn, G, A, "Ann")
+    assert db.roster_names(conn, G, only_free=True) == ["Bob_1", "Cyd", "Dee"]
+    assert db.roster_names(conn, G, only_free=True, limit=2) == ["Bob_1", "Cyd"]
+    assert db.roster_remove(conn, G, "cyd") and not db.roster_remove(conn, G, "cyd")
+    assert db.roster_names(conn, 2) == []  # other guild
+
+
+def test_unlink_returns_name_to_the_list(conn):
+    db.roster_add(conn, G, ["Ann"])
+    db.link(conn, G, A, "Ann")
+    db.unlink(conn, G, A)
+    assert db.roster_names(conn, G, only_free=True) == ["Ann"]
 
 
 def test_save_guild_inserts_then_updates(conn):

@@ -1,5 +1,6 @@
 import csv
 import io
+import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -12,7 +13,15 @@ CREATE TABLE IF NOT EXISTS guilds (
     status_message_id INTEGER,
     officer_role_id   INTEGER,
     member_role_id    INTEGER,
-    board_day         TEXT
+    board_day         TEXT,
+    boss_channel_id   INTEGER,
+    data_channel_id   INTEGER,
+    data_message_ids  TEXT
+);
+CREATE TABLE IF NOT EXISTS roster (
+    guild_id INTEGER NOT NULL,
+    ign      TEXT NOT NULL COLLATE NOCASE,
+    PRIMARY KEY (guild_id, ign)
 );
 CREATE TABLE IF NOT EXISTS links (
     guild_id   INTEGER NOT NULL,
@@ -37,6 +46,13 @@ CREATE TABLE IF NOT EXISTS submissions (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_per_day
     ON submissions (guild_id, discord_id, day_utc) WHERE status = 'approved';
+CREATE TABLE IF NOT EXISTS boss_polls (
+    guild_id      INTEGER NOT NULL,
+    cycle_start   TEXT NOT NULL,
+    message_id    INTEGER NOT NULL,
+    resolved_time TEXT,
+    PRIMARY KEY (guild_id, cycle_start)
+);
 CREATE TABLE IF NOT EXISTS reminders (
     guild_id       INTEGER NOT NULL,
     day_utc        TEXT NOT NULL,
@@ -59,6 +75,10 @@ class IgnTaken(Exception):
     pass
 
 
+class NotInRoster(Exception):
+    pass
+
+
 def now_iso():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -75,13 +95,19 @@ def connect(path):
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(guilds)")}
+    for column, kind in (("boss_channel_id", "INTEGER"), ("data_channel_id", "INTEGER"),
+                         ("data_message_ids", "TEXT")):  # columns added after the first release
+        if column not in have:
+            conn.execute(f"ALTER TABLE guilds ADD COLUMN {column} {kind}")
     return conn
 
 
 # --- guild config ---
 
 GUILD_FIELDS = {"panel_channel_id", "status_message_id", "officer_role_id",
-                "member_role_id", "board_day"}
+                "member_role_id", "board_day", "boss_channel_id",
+                "data_channel_id", "data_message_ids"}
 
 
 def save_guild(conn, guild_id, **fields):
@@ -101,6 +127,27 @@ def get_guild(conn, guild_id):
     return conn.execute("SELECT * FROM guilds WHERE guild_id = ?", (guild_id,)).fetchone()
 
 
+# --- boss polls ---
+
+def add_boss_poll(conn, guild_id, cycle_start, message_id):
+    with conn:
+        conn.execute("INSERT INTO boss_polls (guild_id, cycle_start, message_id) VALUES (?, ?, ?)",
+                     (guild_id, cycle_start, message_id))
+
+
+def latest_boss_poll(conn, guild_id):
+    return conn.execute("SELECT * FROM boss_polls WHERE guild_id = ? ORDER BY cycle_start DESC LIMIT 1",
+                        (guild_id,)).fetchone()
+
+
+def resolve_boss_poll(conn, guild_id, cycle_start, resolved_time):
+    """Claim the end of a poll. True only the first time, so a restart never double-pings."""
+    with conn:
+        return conn.execute(
+            "UPDATE boss_polls SET resolved_time = ? WHERE guild_id = ? AND cycle_start = ? "
+            "AND resolved_time IS NULL", (resolved_time, guild_id, cycle_start)).rowcount == 1
+
+
 # --- reminders ---
 
 def mark_reminder(conn, guild_id, day, minutes_before):
@@ -111,12 +158,52 @@ def mark_reminder(conn, guild_id, day, minutes_before):
             (guild_id, day, minutes_before, now_iso())).rowcount == 1
 
 
+# --- roster: the in-game names members can pick in /link ---
+
+def parse_names(text):
+    """Split on commas or new lines. Returns (valid names, names with a bad length), no duplicates."""
+    seen, good, bad = set(), [], []
+    for raw in re.split(r"[,\n]", text):
+        name = raw.strip()
+        if name and name.lower() not in seen:
+            seen.add(name.lower())
+            (good if IGN_MIN <= len(name) <= IGN_MAX else bad).append(name)
+    return good, bad
+
+
+def roster_add(conn, guild_id, names):
+    """Returns how many names were new."""
+    with conn:
+        return conn.executemany("INSERT OR IGNORE INTO roster VALUES (?, ?)",
+                                [(guild_id, n) for n in names]).rowcount
+
+
+def roster_remove(conn, guild_id, ign):
+    with conn:
+        return conn.execute("DELETE FROM roster WHERE guild_id = ? AND ign = ?",
+                            (guild_id, ign.strip())).rowcount == 1
+
+
+def roster_names(conn, guild_id, text="", only_free=False, limit=-1):
+    """Roster names containing `text` (any case), sorted. only_free hides names already linked."""
+    like = "%" + text.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"  # ! escapes wildcards
+    sql = "SELECT ign FROM roster WHERE guild_id = ? AND ign LIKE ? ESCAPE '!'"
+    if only_free:
+        sql += " AND ign NOT IN (SELECT ign FROM links WHERE guild_id = ?)"
+    sql += " ORDER BY ign LIMIT ?"
+    args = (guild_id, like, *((guild_id,) if only_free else ()), limit)
+    return [r["ign"] for r in conn.execute(sql, args)]
+
+
 # --- links ---
 
 def link(conn, guild_id, discord_id, ign):
-    ign = ign.strip()
-    if not IGN_MIN <= len(ign) <= IGN_MAX:
-        raise ValueError(f"In-game name must be {IGN_MIN} to {IGN_MAX} characters.")
+    """Link a member to a name from the roster (the roster's spelling is stored)."""
+    row = conn.execute("SELECT ign FROM roster WHERE guild_id = ? AND ign = ?",
+                       (guild_id, ign.strip())).fetchone()
+    if not row:
+        raise NotInRoster
+    ign = row["ign"]
     if get_ign(conn, guild_id, discord_id):
         raise AlreadyLinked
     try:

@@ -4,6 +4,7 @@ Status: decisions final. No open questions. Build starts at M0.
 
 Changes from v2: guild XP removed, reset reminder pings added, hosting moved from Oracle VM to a Windows PC.
 Changes in v4: auto-approve, `/log` for staff, downtime notice on `/stop`, one `Officer` staff role, `ingame guild member` role name.
+Changes in v6: guild boss time polls (section 17).
 Changes in v5: no screenshots. One button press logs a fixed 50,000 donation. `/proof`, amount modal, image hashing, and review channel removed.
 
 Bot name: **Evil Donations**
@@ -21,7 +22,7 @@ A Discord bot for a game guild. Each member donates 50,000 coins per day in the 
 | Donation amount | Always 50,000 coins. No amount input. |
 | Frequency | One approved donation per player per UTC day. |
 | Day reset | 00:00 UTC. Members see reset time in their own local time (Discord `<t:UNIX:t>`). |
-| Identity | Member links Discord user to in-game name with `/link`. One name per member, names unique per server (ignoring case). First-come: any unclaimed name. Staff fix wrong links with `/unlink`. |
+| Identity | Member links Discord user to in-game name with `/link`. One name per member, names unique per server (ignoring case). Staff load the guild's in-game names into a roster with `/roster add`. `/link ingame_username` lists the free roster names as the member types, and accepts only a name from the roster. Staff fix wrong links with `/unlink`. |
 | Alts | Not supported. One account per player. |
 | Who is tracked | Members with the Discord role **`ingame guild member`** only. Bots ignored. |
 | Submission | Member presses "Log donation" button. Bot records an approved 50,000 donation for today. No proof, no review. |
@@ -29,6 +30,7 @@ A Discord bot for a game guild. Each member donates 50,000 coins per day in the 
 | Notifications | No DMs. No notifications except reset reminder pings in the panel channel (section 9). Members check status with `/history` or the board. |
 | Status board | Auto-updated embed. See section 7. Uses in-game names only. |
 | History | Kept forever, including members who leave the server. |
+| Data channel | A separate channel with a Data header and three lists: donated today (Discord name, in-game name, time), not donated yet (Discord name, in-game name), not linked (in-game names nobody has claimed yet). 15 rows per page with Previous and Next buttons. Section 18. |
 | Export | CSV via `/export`, opens in Excel or Google Sheets. |
 | Downtime notice | On a graceful stop (`/stop` or Ctrl+C in bot window), bot edits the board message to "Bot offline. Do not log donations. Contact an officer." and removes the button. On start, bot restores the board with the button. Crashes and power loss cannot post a notice. |
 | Staff log | Officer can log a donation for a linked member with `/log`. Logged row is `approved`, `logged_by` set to staff. Same one-per-day rule applies. Day defaults to today UTC; yesterday allowed for late entries. Used after downtime: member tells an officer, officer logs it once the bot is back. |
@@ -69,7 +71,7 @@ No ORM, no web framework, no Docker. Dependencies: `discord.py` and `python-dote
 
 ## 5. Data model
 
-Four tables. Every row carries `guild_id`. Cheap insurance even though only one server runs now.
+Six tables. Every row carries `guild_id`. Cheap insurance even though only one server runs now.
 
 ### `guilds`
 | Column | Type | Notes |
@@ -80,6 +82,17 @@ Four tables. Every row carries `guild_id`. Cheap insurance even though only one 
 | officer_role_id | INTEGER | Staff role `Officer` |
 | member_role_id | INTEGER | Role `ingame guild member`, looked up by name at `/setup` |
 | board_day | TEXT NULL | UTC day the board was last refreshed for rollover |
+| boss_channel_id | INTEGER NULL | Channel for boss time polls. NULL = boss polls off. |
+| data_channel_id | INTEGER NULL | Channel for the data lists. NULL = off. |
+| data_message_ids | TEXT NULL | JSON list of the four data message ids (header, donated, not donated, not linked) |
+
+### `roster`
+The in-game names members may pick in `/link`.
+| Column | Type | Notes |
+|---|---|---|
+| guild_id | INTEGER | |
+| ign | TEXT | In-game name, 2 to 32 chars, unique ignoring case |
+| | | PK (guild_id, ign) |
 
 ### `links`
 | Column | Type | Notes |
@@ -105,6 +118,16 @@ One row per logged donation. This is the history table.
 | logged_by | INTEGER NULL | Staff discord id when logged with `/log`. NULL for member button presses. |
 | created_at | TEXT | ISO 8601 UTC |
 | reviewed_at | TEXT NULL | ISO 8601 UTC, set when voided |
+
+### `boss_polls`
+One row per boss time poll. Drives the cycle after a restart.
+| Column | Type | Notes |
+|---|---|---|
+| guild_id | INTEGER | |
+| cycle_start | TEXT | ISO 8601 UTC spawn time the poll starts from, e.g. 12:00 |
+| message_id | INTEGER | The poll message |
+| resolved_time | TEXT NULL | ISO 8601 UTC time that won (or the last time if none was pinged). NULL while open. |
+| | | PK (guild_id, cycle_start) |
 
 ### `reminders`
 One row per reminder sent. Stops a repeat ping after a restart.
@@ -134,10 +157,11 @@ The index stops duplicates even if two presses overlap. A voided row does not bl
 3. Bot tab → enable **Server Members Intent** (privileged, needed for the not-donated list and reminders).
 4. OAuth2 → URL Generator:
    - Scopes: `bot`, `applications.commands`
-   - Bot permissions: View Channels, Send Messages, Embed Links, Read Message History
+   - Bot permissions: View Channels, Send Messages, Embed Links, Read Message History, Add Reactions
 5. Invite to the **test server** first. Repeat for the live server at rollout.
 6. In the server, create roles `ingame guild member` and `Officer` (exact names, used for lookup).
 7. Make the panel channel read-only: channel settings → Permissions → `@everyone`: Send Messages **off**, Use Application Commands **on**. Add the Evil Donations bot there with Send Messages and Embed Links **on**.
+8. For boss polls (section 17): the bot needs Add Reactions and Read Message History in the boss channel, and must be able to ping the `ingame guild member` role: turn on "Allow anyone to @mention this role" for it, or give the bot Mention Everyone. Members need Add Reactions in the boss channel.
 
 ## 7. Commands and UI
 
@@ -145,10 +169,17 @@ The index stops duplicates even if two presses overlap. A voided row does not bl
 | Command | Who | What it does |
 |---|---|---|
 | `/setup panel_channel officer_role` | Manage Server | Saves config, finds role `ingame guild member`, posts the board with its button. Fails with a clear message if `ingame guild member` is missing. |
-| `/link ign` | Any member | Links Discord user to in-game name |
+| `/link ingame_username` | Any member | Links Discord user to an in-game name. The parameter autocompletes with roster names not yet taken (25 shown, narrowed as you type). Names not on the roster are refused. |
+| `/roster add names` | Staff | Adds in-game names to the roster. Separate them with commas or new lines. Skips duplicates and names outside 2 to 32 characters. |
+| `/roster remove name` | Staff | Removes a name from the roster. Anyone already linked to it stays linked. |
+| `/roster list` | Staff | Shows the roster and which names are taken. Sent as a file when long. |
 | `/unlink [member]` | Self, or staff for others | Removes link |
 | `/undo submission_id` | Staff | Sets approved donation to `voided`, refreshes board |
 | `/stop` | Staff | Posts downtime notice on panel, then shuts the bot down cleanly. |
+| `/boss start channel` | Staff | Starts boss time polls in a channel and posts the first poll right away (section 17). |
+| `/boss stop` | Staff | Stops boss time polls. Old poll messages stay. |
+| `/data start channel` | Staff | Posts the data lists in a channel (section 18). |
+| `/data stop` | Staff | Stops updating the data channel. Its messages stay. |
 | `/log member [day]` | Staff | Records an approved 50,000 donation for a linked member. `day` = `today` (default) or `yesterday`. Refreshes board. |
 | `/history [member]` | Any member for self, staff for others | Lists donations 10 per page with Previous and Next buttons (ephemeral). Members see only their own history. Staff can pass `member` to see another member's. |
 | `/export` | Staff | Sends CSV of all submissions (ephemeral) |
@@ -169,9 +200,9 @@ Evil Donations — guild board
 Today (UTC): 12 donated
 Resets <t:…:t>  (shown in your local time)
 
-Last 10 donors
-PlayerA — 50,000 coins
-...
+Discord name (last 10)   In-game name   Donated at
+DiscordA                 PlayerA         14:05      (three side-by-side columns, one row per donor;
+...                                                  time shown in each viewer's own time zone)
 
 Not donated yet (9)
 PlayerX, PlayerY, PlayerZ, ...
@@ -246,10 +277,12 @@ Discordbot/
 ├── db.py                  # SQLite schema, queries, CSV export
 ├── board.py               # board data, not-donated list, join_capped, paginate (no Discord imports, testable)
 ├── reminders.py           # reminder window check, 50-per-message split
+├── boss.py                # boss poll cycle, winning-time rule, poll and ping text (no Discord imports)
 ├── backup.py              # daily SQLite backup, copy to OneDrive, 30-day prune
 ├── config.py              # .env reading, constants (donation amount, recent 10, role names, REMINDER_MINUTES)
 ├── tests/
 │   ├── test_db.py         # constraints, status transitions, CSV export
+│   ├── test_boss.py       # cycle times, tie and late-ping rules, poll text
 │   ├── test_backup.py     # backup copy, once-a-day, prune
 │   ├── test_board.py      # not-donated list, yesterday totals, join_capped
 │   └── test_reminders.py  # reminder targets, window check, 50-per-message split
@@ -273,7 +306,7 @@ Discordbot/
 ### Manual (test server)
 1. `/setup` → panel and board posted. Missing `ingame guild member` role → refused.
 2. Member with role, not linked, presses button → blocked message.
-3. `/link` works. Second member tries same name → refused.
+3. `/roster add` with 3 names → `/link` lists them. Pick one → linked. Second member: that name is gone from the list, and typing it by hand is refused. A name not on the roster is refused. `/unlink` → the name is back on the list.
 4. Linked member without the role presses button → blocked message.
 5. Linked member with the role presses button → logged 50,000, board shows donor in last 10, count +1.
 6. Same member presses again → "already logged".
@@ -286,6 +319,13 @@ Discordbot/
 13. `/export` → CSV opens in Excel, non-ASCII names correct. No XP column.
 14. Restart bot → button still works.
 15. Member leaves → history still in `/history` and `/export`.
+16. `/boss start channel` → poll posted at once with six numbered reactions, times in local time, role pinged.
+17. React with 3 and 4 as a role member, 4 as a second member. Shorten the wait for the test with a cycle starting 1 hour ahead. Ten minutes before time 4 → ping naming time 4.
+18. React as someone without the role → vote not counted.
+19. Five minutes after the winning time → next poll for the next cycle appears.
+20. Restart the bot inside the 10 minutes before a time → exactly one ping.
+21. `/data start channel` → four messages appear: Data header, Donated today, Not donated yet, Not linked. Press the donate button → the member moves from Not donated to Donated, with a local time.
+22. With more than 15 names in a section (add test names with `/roster add` and `/link`) → page 1 of 2 shows 15 rows. Next shows the rest, Previous goes back. Delete one data message → the next refresh reposts all four.
 
 ## 13. PC hosting plan
 
@@ -316,6 +356,8 @@ Order is fixed.
 | M5 | Rollover, reminders, backups, restart safety | Manual steps 9 to 11 and 14 pass. Backup file lands in OneDrive folder. |
 | M6 | PC auto-start and unattended run | Bot runs unattended for 48 h on the PC, survives a forced restart and a logoff/logon. One backup restored locally. |
 | M7 | Live rollout | Live server configured, officers briefed on `/log` and `/undo` |
+| M8 | Boss time polls | Manual steps 16 to 20 pass |
+| M9 | Data channel | Manual steps 21 and 22 pass |
 
 ## 15. Out of scope (for now)
 
@@ -349,3 +391,36 @@ Resolved in v4:
 Resolved in v5:
 - No screenshots. One button press logs a fixed 50,000 donation.
 - Accepted risk: nothing checks that the member really donated in the game.
+
+Resolved in v6:
+- Roster: `/link` only accepts names staff added with `/roster add`. Chosen from an autocomplete list of free names.
+- Boss time polls use a message with numbered reactions, not a Discord poll, because poll options cannot show local time.
+
+## 17. Boss time polls
+
+The guild boss spawns globally at 00:00, 06:00, 12:00 and 18:00 UTC. Members choose the time in each 6-hour window that suits them. The bot picks the winner and pings the guild 10 minutes before it.
+
+- **Poll message:** posted in the boss channel, pings the `ingame guild member` role. Six options for the cycle: the spawn hour and the next five hours (12:00 cycle: 12:00, 13:00, 14:00, 15:00, 16:00, 17:00). The next spawn hour is never an option. Each option is `1️⃣ <t:UNIX:t>`, so Discord shows only the time in the viewer's own time zone, with no UTC text. The bot adds the six number reactions.
+- **Voting:** a member reacts with every number that works for them. Only members with the `ingame guild member` role count. The bot's own reactions never count.
+- **Winner:** only times still ahead can win. Most votes wins. A tie goes to the earliest. No votes anywhere means the first time ahead wins.
+- **Ping:** `@ingame guild member Guild boss at <time> (<relative time>). Go to the guild island now.` sent 10 minutes before the winning time. If the bot was off and comes back after that point but before the time, it still sends the ping. Once the time has started, no ping for it.
+- **Counting votes:** the 60-second loop counts reactions only inside the 10 minutes before the earliest time still ahead. No ping can be due earlier, so counting is skipped the rest of the hour.
+- **Next poll:** 5 minutes after the winning time, the bot posts the poll for the next cycle (winner 14:00 → poll at 14:05 with 18:00 to 23:00). If every time passed without a ping, the poll ends and the next poll follows. If the bot was off through whole cycles, it posts the first cycle that still has a time ahead.
+- **Start and stop:** `/boss start channel` (staff) saves the channel and posts the poll for the next spawn time right away (at 10:30 UTC: the 12:00 cycle). `/boss stop` turns it off.
+- **State:** `boss_polls` keeps each poll, so a restart carries on. The end of a poll is claimed in the database before the ping is sent, so a restart cannot ping twice.
+- **Deleted poll message:** votes count as zero, so the first time ahead gets the ping.
+
+## 18. Data channel
+
+A read-only channel that shows who has and has not donated today. `/data start channel` (staff) posts four messages and keeps them updated.
+
+1. **Data** (header): today's UTC date, the reset time in each viewer's local time, and the three counts.
+2. **Donated today (N):** Discord name, in-game name, and the time the donation was logged (Discord local-time tag). Newest first.
+3. **Not donated yet (N):** Discord name and in-game name of linked members with no approved donation today. Sorted by in-game name.
+4. **Not linked (N):** in-game name only. The roster names nobody has claimed with `/link` yet. Sorted by name.
+
+- List 3 holds only linked members, so every row has both names. List 4 comes from the roster, not from Discord members: a role member who is not on the roster appears nowhere until staff add their name.
+- Tracked = role `ingame guild member`, bots ignored. Names longer than 16 characters are cut with an ellipsis so the columns line up.
+- Each list shows 15 rows per page (`DATA_PAGE` in `config.py`). Previous and Next buttons under it change the shared message for everyone. The page resets to 1 after a bot restart.
+- Refresh triggers are the same as the board: donate button, `/log`, `/undo`, setup, new day, reminders sent. The messages are edited in place. If one is deleted, the next refresh deletes the rest and posts all four again.
+- The bot needs View Channel, Send Messages, and Embed Links in the channel. Make it read-only for members (Send Messages off). The buttons still work.

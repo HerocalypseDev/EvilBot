@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 import logging
 import logging.handlers
 import os
@@ -15,10 +16,11 @@ load_dotenv()  # before importing config: it reads REMINDER_MINUTES from the env
 
 import backup
 import board
+import boss
 import db
 import reminders
-from config import (BACKUP_HOUR_UTC, DONATION_AMOUNT, MEMBER_ROLE_NAME, RECENT_DONORS,
-                    REMINDER_MINUTES)
+from config import (BACKUP_HOUR_UTC, DATA_PAGE, DONATION_AMOUNT, IGN_MAX, IGN_MIN, MEMBER_ROLE_NAME,
+                    RECENT_DONORS, REMINDER_MINUTES)
 
 log = logging.getLogger("evil")
 
@@ -46,13 +48,23 @@ def tracked_members(guild, member_role_id):
     return [(m.id, m.display_name) for m in role.members if not m.bot] if role else []
 
 
+def short(text):
+    text = discord.utils.escape_markdown(text)
+    return text if len(text) <= 16 else text[:15] + "…"
+
+
 def board_embed(data):
     embed = discord.Embed(
         title="Evil Donations — guild board",
         description=f"Today (UTC): **{data['today_count']}** donated\n"
                     f"Resets <t:{data['reset_ts']}:t> (your local time)")
-    recent = "\n".join(f"{ign} — {amount:,} coins" for ign, amount in data["recent"])
-    embed.add_field(name=f"Last {RECENT_DONORS} donors", value=recent or "Nobody yet.", inline=False)
+    if data["recent"]:  # three inline fields line up as columns: one row per donor
+        embed.add_field(name=f"Discord name (last {RECENT_DONORS})",
+                        value="\n".join(short(name) for name, _, _ in data["recent"]))
+        embed.add_field(name="In-game name", value="\n".join(short(ign) for _, ign, _ in data["recent"]))
+        embed.add_field(name="Donated at", value="\n".join(f"<t:{ts}:t>" for _, _, ts in data["recent"]))
+    else:
+        embed.add_field(name=f"Last {RECENT_DONORS} donors", value="Nobody yet.", inline=False)
     embed.add_field(name=f"Not donated yet ({len(data['waiting'])})",
                     value=board.join_capped(data["waiting"]) or "Everyone has donated.", inline=False)
     embed.add_field(name="Yesterday (UTC)",
@@ -63,9 +75,110 @@ def board_embed(data):
 
 
 _board_lock = asyncio.Lock()  # two quick refreshes must not post two boards
+_data_lock = asyncio.Lock()
 
 
 async def refresh_board(guild):
+    await refresh_board_message(guild)
+    await refresh_data(guild)
+
+
+# --- data channel: a header message plus Donated / Not donated / Not linked, 15 rows per page ---
+
+DATA_SECTIONS = {
+    "donated": ("Donated today", ("Discord name", "In-game name", "Donated at")),
+    "not_donated": ("Not donated yet", ("Discord name", "In-game name")),
+    "not_linked": ("Not linked", ("In-game name",)),
+}
+data_pages = {}  # (guild_id, section) -> page shown. Resets to page 1 after a restart.
+
+
+def data_header_embed(sections):
+    counts = {key: len(sections[key]) for key in DATA_SECTIONS}
+    return discord.Embed(
+        title="Data",
+        description=f"{db.today_utc()} (UTC) · resets <t:{board.next_reset_ts()}:t> (your local time)\n"
+                    f"Donated: **{counts['donated']}** · Not donated: **{counts['not_donated']}** · "
+                    f"Not linked: **{counts['not_linked']}**")
+
+
+def data_section_embed(guild_id, key, rows):
+    title, columns = DATA_SECTIONS[key]
+    chunk, page, pages = board.paginate(rows, data_pages.get((guild_id, key), 0), DATA_PAGE)
+    data_pages[(guild_id, key)] = page
+    embed = discord.Embed(title=f"{title} ({len(rows)})")
+    if chunk:
+        for n, column in enumerate(columns):
+            values = [f"<t:{row[n]}:t>" if column == "Donated at" else short(row[n]) for row in chunk]
+            embed.add_field(name=column, value="\n".join(values))
+    else:
+        embed.description = "Nobody."
+    embed.set_footer(text=f"Page {page + 1}/{pages}")
+    return embed
+
+
+class DataView(discord.ui.View):
+    """Previous / Next buttons under one data section. They change the shared message."""
+
+    def __init__(self, key):
+        super().__init__(timeout=None)
+        for label, step in (("Previous", -1), ("Next", 1)):
+            button = discord.ui.Button(label=label, custom_id=f"data:{key}:{step}")
+            button.callback = self._callback(key, step)
+            self.add_item(button)
+
+    @staticmethod
+    def _callback(key, step):
+        async def callback(interaction):
+            guild = interaction.guild
+            row = db.get_guild(bot.db, guild.id)
+            footer = interaction.message.embeds[0].footer.text or "Page 1/1"
+            data_pages[(guild.id, key)] = int(footer.split()[1].split("/")[0]) - 1 + step
+            sections = board.data_sections(bot.db, guild.id, tracked_members(guild, row["member_role_id"]),
+                                           db.today_utc())
+            await interaction.response.edit_message(embed=data_section_embed(guild.id, key, sections[key]))
+        return callback
+
+
+async def refresh_data(guild):
+    """Edit the data messages in place. If one was deleted, post them all again.
+    Returns an error text if Discord refused, else None."""
+    async with _data_lock:
+        row = db.get_guild(bot.db, guild.id)
+        channel = row and row["data_channel_id"] and guild.get_channel(row["data_channel_id"])
+        if not channel:
+            return
+        sections = board.data_sections(bot.db, guild.id, tracked_members(guild, row["member_role_id"]),
+                                       db.today_utc())
+        ids = json.loads(row["data_message_ids"] or "[]")
+        embeds = [data_header_embed(sections)] + [data_section_embed(guild.id, key, sections[key])
+                                                  for key in DATA_SECTIONS]
+        try:
+            if len(ids) == len(embeds):
+                for message_id, embed in zip(ids, embeds):
+                    await channel.get_partial_message(message_id).edit(embed=embed)
+                return
+        except discord.NotFound:
+            pass
+        except discord.HTTPException as e:
+            log.warning("Data refresh failed in guild %s: %s", guild.id, e)
+            return str(e)
+        for message_id in ids:  # clear what is left of the old set, then post a new one
+            try:
+                await channel.get_partial_message(message_id).delete()
+            except discord.HTTPException:
+                pass
+        try:
+            posted = [await channel.send(embed=embeds[0])]
+            for key, embed in zip(DATA_SECTIONS, embeds[1:]):
+                posted.append(await channel.send(embed=embed, view=DataView(key)))
+        except discord.HTTPException as e:
+            log.warning("Data post failed in guild %s: %s", guild.id, e)
+            return str(e)
+        db.save_guild(bot.db, guild.id, data_message_ids=json.dumps([m.id for m in posted]))
+
+
+async def refresh_board_message(guild):
     """Update the board. If something was posted below it, move it to the bottom of the channel."""
     async with _board_lock:
         row = db.get_guild(bot.db, guild.id)
@@ -158,6 +271,8 @@ class Bot(commands.Bot):
 
     async def setup_hook(self):
         self.add_view(PanelView())  # keeps the panel button working after a restart
+        for key in DATA_SECTIONS:
+            self.add_view(DataView(key))
         await self.tree.sync()
         tick.start()
 
@@ -198,6 +313,67 @@ async def send_reminder(guild, row):
     await refresh_board(guild)  # the reminder pushed the board up: move it back to the bottom
 
 
+def iso_utc(text):
+    return datetime.fromisoformat(text)
+
+
+async def post_boss_poll(guild, channel, role_id, cycle_start):
+    message = await channel.send(boss.poll_text(f"<@&{role_id}>", cycle_start))
+    db.add_boss_poll(bot.db, guild.id, cycle_start.isoformat(), message.id)
+    for emoji in boss.EMOJIS:
+        await message.add_reaction(emoji)
+    log.info("Boss poll posted for %s in guild %s", cycle_start.isoformat(), guild.id)
+
+
+async def count_votes(guild, channel, message_id, role_id):
+    """Votes per option: one per ingame guild member who reacted with that number."""
+    votes = [0] * boss.SLOTS
+    try:
+        message = await channel.fetch_message(message_id)
+    except discord.NotFound:
+        log.warning("Boss poll message %s was deleted: counting no votes", message_id)
+        return votes
+    for reaction in message.reactions:
+        if str(reaction.emoji) in boss.EMOJIS:
+            index = boss.EMOJIS.index(str(reaction.emoji))
+            async for user in reaction.users():
+                member = guild.get_member(user.id)
+                if member and not member.bot and member.get_role(role_id):
+                    votes[index] += 1
+    return votes
+
+
+async def boss_tick(guild, row, now):
+    """Post polls, watch the votes, and ping the guild 10 minutes before the winning time."""
+    channel = guild.get_channel(row["boss_channel_id"])
+    role = guild.get_role(row["member_role_id"])
+    if not channel or not role:
+        log.warning("Boss channel or role missing in guild %s", guild.id)
+        return
+    latest = db.latest_boss_poll(bot.db, guild.id)
+    if latest is None:
+        return await post_boss_poll(guild, channel, role.id, boss.next_cycle_start(now))
+    cycle = iso_utc(latest["cycle_start"])
+    if latest["resolved_time"]:
+        if now >= iso_utc(latest["resolved_time"]) + boss.NEXT_POLL_DELAY:
+            await post_boss_poll(guild, channel, role.id, boss.upcoming_cycle(cycle + boss.CYCLE, now))
+        return
+    times = boss.slot_times(cycle)
+    ahead = [t for t in times if t > now]
+    if not ahead:  # every time passed without a ping
+        db.resolve_boss_poll(bot.db, guild.id, latest["cycle_start"], times[-1].isoformat())
+        return
+    if now < ahead[0] - boss.LEAD:  # no ping can be due yet, so skip counting votes
+        return
+    votes = await count_votes(guild, channel, latest["message_id"], role.id)
+    pick = boss.pick_ping(now, cycle, votes)
+    # the slot is claimed before sending, so a restart never double-pings
+    if pick is not None and db.resolve_boss_poll(bot.db, guild.id, latest["cycle_start"],
+                                                 times[pick].isoformat()):
+        await channel.send(boss.ping_text(role.mention, times[pick]))
+        log.info("Boss ping for %s in guild %s, votes %s", times[pick].isoformat(), guild.id, votes)
+
+
 @tasks.loop(seconds=60)
 async def tick():
     """Every minute: refresh the board on a new UTC day, send due reminders, write the daily backup."""
@@ -208,6 +384,8 @@ async def tick():
         if not row:
             continue
         try:
+            if row["boss_channel_id"]:
+                await boss_tick(guild, row, now)
             if row["board_day"] != today:
                 await refresh_board(guild)
                 db.save_guild(bot.db, guild.id, board_day=today)
@@ -262,11 +440,12 @@ async def setup(interaction: discord.Interaction, panel_channel: discord.TextCha
 
 @bot.tree.command(description="Link your in-game name.")
 @app_commands.guild_only()
-async def link(interaction: discord.Interaction, ign: str):
+@app_commands.describe(ingame_username="Pick your in-game name from the list")
+async def link(interaction: discord.Interaction, ingame_username: str):
     try:
-        name = db.link(bot.db, interaction.guild_id, interaction.user.id, ign)
-    except ValueError as e:
-        msg = str(e)
+        name = db.link(bot.db, interaction.guild_id, interaction.user.id, ingame_username)
+    except db.NotInRoster:
+        msg = "Pick your name from the list. If it is not there, ask an officer to add it."
     except db.AlreadyLinked:
         msg = "You are already linked. Use /unlink first to change it."
     except db.IgnTaken:
@@ -274,6 +453,63 @@ async def link(interaction: discord.Interaction, ign: str):
     else:
         msg = f"Linked to **{name}**."
     await interaction.response.send_message(msg, ephemeral=True)
+
+
+@link.autocomplete("ingame_username")
+async def link_autocomplete(interaction: discord.Interaction, current: str):
+    names = db.roster_names(bot.db, interaction.guild_id, current, only_free=True, limit=25)
+    return [app_commands.Choice(name=n, value=n) for n in names]
+
+
+roster_group = app_commands.Group(name="roster", description="The in-game names members pick in /link.",
+                                  guild_only=True)
+
+
+@roster_group.command(name="add", description="Staff: add in-game names, separated by commas or new lines.")
+async def roster_add(interaction: discord.Interaction, names: str):
+    if not await require_staff(interaction):
+        return
+    good, bad = db.parse_names(names)
+    added = db.roster_add(bot.db, interaction.guild_id, good)
+    msg = f"Added {added} new name(s). {len(good) - added} were already on the list."
+    if bad:
+        msg += f"\nSkipped (names need {IGN_MIN} to {IGN_MAX} characters): {board.join_capped(bad, 500)}"
+    await interaction.response.send_message(msg, ephemeral=True)
+
+
+@roster_group.command(name="remove", description="Staff: remove a name from the list.")
+async def roster_remove(interaction: discord.Interaction, name: str):
+    if not await require_staff(interaction):
+        return
+    if db.roster_remove(bot.db, interaction.guild_id, name):
+        msg = f"Removed **{name}**. Anyone already linked to it stays linked."
+    else:
+        msg = "That name is not on the list."
+    await interaction.response.send_message(msg, ephemeral=True)
+
+
+@roster_remove.autocomplete("name")
+async def roster_remove_autocomplete(interaction: discord.Interaction, current: str):
+    names = db.roster_names(bot.db, interaction.guild_id, current, limit=25)
+    return [app_commands.Choice(name=n, value=n) for n in names]
+
+
+@roster_group.command(name="list", description="Staff: show the names and which are taken.")
+async def roster_list(interaction: discord.Interaction):
+    if not await require_staff(interaction):
+        return
+    names = db.roster_names(bot.db, interaction.guild_id)
+    free = set(db.roster_names(bot.db, interaction.guild_id, only_free=True))
+    text = "\n".join(n if n in free else f"{n} (taken)" for n in names)
+    header = f"{len(names)} names, {len(free)} still free."
+    if len(text) + len(header) > 1800:  # too long for a message: send as a file
+        file = discord.File(io.BytesIO(text.encode("utf-8")), "roster.txt")
+        return await interaction.response.send_message(header, file=file, ephemeral=True)
+    await interaction.response.send_message(f"{header}\n{text}" if names else "The list is empty.",
+                                            ephemeral=True)
+
+
+bot.tree.add_command(roster_group)
 
 
 @bot.tree.command(description="Remove a link. Staff can unlink other members.")
@@ -357,6 +593,63 @@ async def export(interaction: discord.Interaction):
     data = db.export_csv(bot.db, interaction.guild_id).encode("utf-8-sig")  # BOM: Excel reads UTF-8
     await interaction.response.send_message(
         file=discord.File(io.BytesIO(data), "donations.csv"), ephemeral=True)
+
+
+boss_group = app_commands.Group(name="boss", description="Guild boss time polls.", guild_only=True)
+
+
+@boss_group.command(name="start", description="Staff: start the boss time polls in a channel.")
+async def boss_start(interaction: discord.Interaction, channel: discord.TextChannel):
+    if not await require_staff(interaction):
+        return
+    if not db.get_guild(bot.db, interaction.guild_id):
+        return await interaction.response.send_message("Run /setup first.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    db.save_guild(bot.db, interaction.guild_id, boss_channel_id=channel.id)
+    await boss_tick(interaction.guild, db.get_guild(bot.db, interaction.guild_id),
+                    datetime.now(timezone.utc))
+    await interaction.followup.send(f"Boss polls started in {channel.mention}.", ephemeral=True)
+
+
+@boss_group.command(name="stop", description="Staff: stop the boss time polls.")
+async def boss_stop(interaction: discord.Interaction):
+    if not await require_staff(interaction):
+        return
+    db.save_guild(bot.db, interaction.guild_id, boss_channel_id=None)
+    await interaction.response.send_message("Boss polls stopped.", ephemeral=True)
+
+
+bot.tree.add_command(boss_group)
+
+data_group = app_commands.Group(name="data", description="The data channel.", guild_only=True)
+
+
+@data_group.command(name="start", description="Staff: show donation data in a channel.")
+async def data_start(interaction: discord.Interaction, channel: discord.TextChannel):
+    if not await require_staff(interaction):
+        return
+    if not db.get_guild(bot.db, interaction.guild_id):
+        return await interaction.response.send_message("Run /setup first.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    db.save_guild(bot.db, interaction.guild_id, data_channel_id=channel.id)
+    error = await refresh_data(interaction.guild)
+    if error:
+        return await interaction.followup.send(
+            f"Could not post in {channel.mention}: {error}\nGive the bot View Channel, Send Messages and "
+            "Embed Links in that channel, then run /data start again.", ephemeral=True)
+    await interaction.followup.send(f"Data posted in {channel.mention}.", ephemeral=True)
+
+
+@data_group.command(name="stop", description="Staff: stop updating the data channel.")
+async def data_stop(interaction: discord.Interaction):
+    if not await require_staff(interaction):
+        return
+    db.save_guild(bot.db, interaction.guild_id, data_channel_id=None)
+    await interaction.response.send_message("Data channel stopped. Its messages stay as they are.",
+                                            ephemeral=True)
+
+
+bot.tree.add_command(data_group)
 
 
 @setup.error

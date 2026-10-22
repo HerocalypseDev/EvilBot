@@ -1,0 +1,50 @@
+from datetime import timedelta
+
+CYCLE = timedelta(hours=6)      # a guild boss spawns at 00:00, 06:00, 12:00, 18:00 UTC
+SLOTS = 6                       # options per poll: spawn hour to spawn hour + 5
+LEAD = timedelta(minutes=10)    # ping this long before the winning time
+NEXT_POLL_DELAY = timedelta(minutes=5)
+EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣"]
+
+
+def slot_times(cycle_start):
+    return [cycle_start + timedelta(hours=k) for k in range(SLOTS)]
+
+
+def next_cycle_start(now):
+    """First spawn time after `now`."""
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return midnight + CYCLE * (now.hour // 6 + 1)
+
+
+def upcoming_cycle(after, now):
+    """First cycle start >= `after` that still has a time ahead of `now` (skips cycles missed while off)."""
+    start = after
+    while start + timedelta(hours=SLOTS - 1) <= now:
+        start += CYCLE
+    return start
+
+
+def pick_ping(now, cycle_start, votes):
+    """Index of the time to ping about right now, or None. Only times still ahead can win. The most
+    votes wins, the earliest on a tie (so with no votes the first time ahead). The ping is due
+    LEAD before it; a late ping is still sent while that time has not started."""
+    ahead = [k for k, t in enumerate(slot_times(cycle_start)) if t > now]
+    if not ahead:
+        return None
+    top = max(votes[k] for k in ahead)
+    winner = next(k for k in ahead if votes[k] == top)
+    return winner if now >= slot_times(cycle_start)[winner] - LEAD else None
+
+
+def poll_text(role_mention, cycle_start):
+    lines = [f"{role_mention} **Guild boss time vote.** React with every time that works for you. "
+             "Times below are shown in your own time zone."]
+    for emoji, t in zip(EMOJIS, slot_times(cycle_start)):
+        lines.append(f"{emoji} <t:{int(t.timestamp())}:t>")
+    return "\n".join(lines)
+
+
+def ping_text(role_mention, t):
+    ts = int(t.timestamp())
+    return f"{role_mention} Guild boss at <t:{ts}:t> (<t:{ts}:R>). Go to the guild island now."

@@ -2,6 +2,7 @@ import os
 
 DONATION_AMOUNT = 50_000
 RECENT_DONORS = 10
+DATA_PAGE = 15  # rows per page in the data channel
 MEMBER_ROLE_NAME = "ingame guild member"
 STAFF_ROLE_NAME = "Officer"
 # Minutes before 00:00 UTC. Env override lets you test a reminder at any time of day, e.g. REMINDER_MINUTES=870

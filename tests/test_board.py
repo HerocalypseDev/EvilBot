@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 import db
-from board import board_data, join_capped, next_reset_ts, not_donated, paginate
+from board import board_data, data_sections, join_capped, next_reset_ts, not_donated, paginate
 
 G, DAY, YDAY = 1, "2026-10-22", "2026-10-21"
 
@@ -11,6 +11,7 @@ def conn_with(*members):
     conn = db.connect(":memory:")
     for i, ign in members:
         if ign:
+            db.roster_add(conn, G, [ign])
             db.link(conn, G, i, ign)
     return conn
 
@@ -55,8 +56,9 @@ def test_board_recent_order_and_totals():
     db.record(conn, G, 2, "n", "P2", YDAY)
     data = board_data(conn, G, [(i, "n") for i, _ in members], DAY, YDAY)
     assert data["today_count"] == 11
-    assert [ign for ign, _ in data["recent"]] == ["P11", "P10", "P9", "P8", "P7", "P6", "P5", "P4", "P3", "P2"]
+    assert [ign for _, ign, _ in data["recent"]] == ["P11", "P10", "P9", "P8", "P7", "P6", "P5", "P4", "P3", "P2"]
     assert data["waiting"] == []
+    assert all(name == "n" and isinstance(ts, int) for name, _, ts in data["recent"])
     assert (data["yesterday_count"], data["yesterday_coins"]) == (2, 100_000)
 
 
@@ -71,3 +73,20 @@ def test_voided_donation_leaves_board():
 def test_next_reset_is_next_midnight_utc():
     now = datetime(2026, 10, 22, 21, 30, tzinfo=timezone.utc)
     assert next_reset_ts(now) == int(datetime(2026, 10, 23, tzinfo=timezone.utc).timestamp())
+
+
+def test_data_sections_split_the_guild_three_ways():
+    conn = conn_with((1, "Alpha"), (2, "Beta"), (3, "Gamma"), (4, None), (5, None))
+    db.roster_add(conn, G, ["Zed", "Yan"])  # on the roster, nobody has claimed them
+    db.record(conn, G, 3, "Gam", "Gamma", DAY)
+    tracked = [(5, "Eve"), (4, "dan"), (3, "Gam"), (2, "Bob"), (1, "Al")]
+    sections = data_sections(conn, G, tracked, DAY)
+    assert [(n, ign) for n, ign, _ in sections["donated"]] == [("Gam", "Gamma")]
+    assert isinstance(sections["donated"][0][2], int)
+    assert sections["not_donated"] == [("Al", "Alpha"), ("Bob", "Beta")]  # Discord name + in-game name
+    assert sections["not_linked"] == [("Yan",), ("Zed",)]  # unclaimed roster names only
+
+
+def test_data_sections_empty_guild():
+    conn = conn_with()
+    assert data_sections(conn, G, [], DAY) == {"donated": [], "not_donated": [], "not_linked": []}
