@@ -318,7 +318,7 @@ def iso_utc(text):
 
 
 def warn_if_role_not_pinged(message, role_id):
-    if role_id not in message.raw_role_mentions:
+    if role_id not in [r.id for r in message.role_mentions]:  # what Discord actually notified
         log.warning("Role ping did not notify anyone in guild %s: turn on 'Allow anyone to @mention "
                     "this role' for the member role, or give the bot Mention All Roles", message.guild.id)
 
