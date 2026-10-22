@@ -28,7 +28,8 @@ Project: Discord bot. Stack: JavaScript / Node.js.
 ## Git workflow
 
 - Commit and push after each numbered step of a plan, once that step passes its check.
-- Write a clear commit message describing the step.
+- Commit messages: one simple plain sentence describing the step. Example: `Add dice command to bot.`
+- Commit messages must not include `Co-Authored-By`, `Claude-Session`, `Generated with`, or any other AI attribution lines.
 - Do not commit or push partial or failing work.
 - Do not rewrite history or force-push.
 
