@@ -6,3 +6,6 @@ __pycache__/
 .pytest_cache/
 logs/
 backups/
+build/
+dist/
+*.spec

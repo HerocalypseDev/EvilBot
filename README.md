@@ -19,3 +19,14 @@ Discord bot that logs the daily 50,000 guild donation. Design: `PLAN.md`.
 ## Tests
 
 `venv\Scripts\python -m pytest`
+
+## Build the .exe (on the dev PC)
+
+`.venv\Scripts\pip install pyinstaller`, then `.venv\Scripts\python -m PyInstaller --onefile --name EvilDonations --noconfirm bot.py`. Result: `dist\EvilDonations.exe`.
+
+## Run the .exe on another PC (64-bit Windows, no Python needed)
+
+1. Make a folder, e.g. `C:\EvilDonations\`. Copy in `EvilDonations.exe`, the `scripts` folder, and your `.env`. To keep the data, also copy `donations.db`.
+2. Run `powershell -File scriptsun_bot.ps1`, or `scripts\install_task.ps1` to start at logon.
+3. Run the bot on **one** PC at a time. Two copies with the same token will both answer.
+4. Windows SmartScreen may warn about an unsigned exe: More info, then Run anyway.
