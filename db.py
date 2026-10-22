@@ -74,6 +74,29 @@ def connect(path):
     return conn
 
 
+# --- guild config ---
+
+GUILD_FIELDS = {"panel_channel_id", "panel_message_id", "status_message_id", "officer_role_id",
+                "member_role_id", "board_day", "backup_day"}
+
+
+def save_guild(conn, guild_id, **fields):
+    bad = fields.keys() - GUILD_FIELDS
+    if bad:
+        raise ValueError(f"Unknown guild fields: {sorted(bad)}")
+    cols = ", ".join(["guild_id", *fields])
+    marks = ", ".join("?" * (len(fields) + 1))
+    updates = ", ".join(f"{c} = excluded.{c}" for c in fields)
+    with conn:
+        conn.execute(
+            f"INSERT INTO guilds ({cols}) VALUES ({marks}) "
+            f"ON CONFLICT (guild_id) DO UPDATE SET {updates}", (guild_id, *fields.values()))
+
+
+def get_guild(conn, guild_id):
+    return conn.execute("SELECT * FROM guilds WHERE guild_id = ?", (guild_id,)).fetchone()
+
+
 # --- links ---
 
 def link(conn, guild_id, discord_id, ign):

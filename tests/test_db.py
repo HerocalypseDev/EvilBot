@@ -27,6 +27,15 @@ def test_link_rules(conn):
     db.link(conn, G, B, "Dragon")
 
 
+def test_save_guild_inserts_then_updates(conn):
+    db.save_guild(conn, G, panel_channel_id=5, officer_role_id=6)
+    db.save_guild(conn, G, panel_channel_id=7)
+    row = db.get_guild(conn, G)
+    assert (row["panel_channel_id"], row["officer_role_id"]) == (7, 6)
+    with pytest.raises(ValueError):
+        db.save_guild(conn, G, nope=1)
+
+
 def test_record_is_approved_fixed_amount(conn):
     sid = donate(conn)
     row = conn.execute("SELECT * FROM submissions WHERE id = ?", (sid,)).fetchone()

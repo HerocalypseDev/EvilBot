@@ -151,7 +151,7 @@ The index stops duplicates even if two presses overlap. A voided row does not bl
 | `/undo submission_id` | Staff | Sets approved donation to `voided`, refreshes board |
 | `/stop` | Staff | Posts downtime notice on panel, then shuts the bot down cleanly. |
 | `/log member [day]` | Staff | Records an approved 50,000 donation for a linked member. `day` = `today` (default) or `yesterday`. Refreshes board. |
-| `/history [member]` | Any | Lists donations for a member (ephemeral). This is how members see their donations. |
+| `/history [member]` | Any member for self, staff for others | Lists donations (ephemeral). Members see only their own history. Staff can pass `member` to see another member's. |
 | `/export` | Staff | Sends CSV of all submissions (ephemeral) |
 
 "Staff" = Manage Server, or `Officer` role.
