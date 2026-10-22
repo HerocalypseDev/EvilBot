@@ -537,9 +537,10 @@ bot.tree.add_command(roster_group)
 
 @bot.tree.command(description="Remove a link. Staff can unlink other members.")
 @app_commands.guild_only()
-async def unlink(interaction: discord.Interaction, member: discord.Member | None = None):
-    target = member or interaction.user
-    if target != interaction.user and not is_staff(interaction):
+@app_commands.describe(member="Staff can also paste the user ID of someone who left the server")
+async def unlink(interaction: discord.Interaction, member: discord.User | None = None):
+    target = member or interaction.user  # User, not Member: a member who left keeps their name taken
+    if target.id != interaction.user.id and not is_staff(interaction):
         msg = "Only staff can unlink other members."
     elif db.unlink(bot.db, interaction.guild_id, target.id):
         msg = f"Unlinked {target.display_name}."
