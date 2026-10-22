@@ -1,7 +1,9 @@
 import asyncio
 import io
 import logging
+import logging.handlers
 import os
+from pathlib import Path
 from datetime import datetime, timezone
 
 import discord
@@ -76,7 +78,7 @@ async def refresh_board(guild):
         old = channel.get_partial_message(row["status_message_id"])
         try:
             if channel.last_message_id == old.id:
-                await old.edit(embed=embed)
+                await old.edit(embed=embed, view=PanelView())  # view: brings the button back after /stop
             else:
                 try:
                     await old.delete()
@@ -159,8 +161,28 @@ class Bot(commands.Bot):
         await self.tree.sync()
         tick.start()
 
+    async def close(self):
+        if not self.is_closed():
+            await post_offline_notice()
+        await super().close()
+
 
 bot = Bot()
+
+
+async def post_offline_notice():
+    """Replace each board with an offline notice and no button. Runs on /stop and Ctrl+C."""
+    notice = discord.Embed(title="Evil Donations — offline",
+                           description="Bot offline. Do not log donations. Contact an officer.")
+    for guild in bot.guilds:
+        row = db.get_guild(bot.db, guild.id)
+        channel = row and guild.get_channel(row["panel_channel_id"])
+        if not channel or not row["status_message_id"]:
+            continue
+        try:
+            await channel.get_partial_message(row["status_message_id"]).edit(embed=notice, view=None)
+        except discord.HTTPException as e:
+            log.warning("Offline notice failed in guild %s: %s", guild.id, e)
 
 
 async def send_reminder(guild, row):
@@ -214,6 +236,8 @@ async def tick():
 @tick.before_loop
 async def before_tick():
     await bot.wait_until_ready()
+    for guild in bot.guilds:  # brings the board and button back after a /stop or crash
+        await refresh_board(guild)
 
 
 @bot.tree.command(description="Post the donation panel in a channel.")
@@ -315,6 +339,16 @@ async def undo(interaction: discord.Interaction, submission_id: int):
         await interaction.response.send_message("That donation is not active.", ephemeral=True)
 
 
+@bot.tree.command(description="Staff: post the offline notice and shut the bot down.")
+@app_commands.guild_only()
+async def stop(interaction: discord.Interaction):
+    if not await require_staff(interaction):
+        return
+    await interaction.response.send_message("Stopping. Start the bot again to bring the button back.",
+                                            ephemeral=True)
+    await bot.close()
+
+
 @bot.tree.command(description="Staff: download all donations as a CSV file.")
 @app_commands.guild_only()
 async def export(interaction: discord.Interaction):
@@ -337,5 +371,15 @@ if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN")
     if not token:
         raise SystemExit("DISCORD_TOKEN missing. Put it in .env.")
-    discord.utils.setup_logging(level=logging.INFO, root=True)  # also shows our own log lines
-    bot.run(token, log_handler=None)
+    log_dir = Path(os.getenv("LOG_DIR", "logs"))
+    log_dir.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO, format="[%(asctime)s] [%(levelname)-7s] %(name)s: %(message)s",
+        handlers=[logging.StreamHandler(),
+                  logging.handlers.RotatingFileHandler(log_dir / "bot.log", maxBytes=1_000_000,
+                                                       backupCount=3, encoding="utf-8")])
+    try:
+        bot.run(token, log_handler=None)
+    except Exception:
+        log.exception("Bot crashed")
+        raise SystemExit(1)  # nonzero: run_bot.ps1 restarts it
