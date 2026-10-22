@@ -699,9 +699,6 @@ async def on_setup_error(interaction: discord.Interaction, error):
 
 
 if __name__ == "__main__":
-    token = os.getenv("DISCORD_TOKEN")
-    if not token:
-        raise SystemExit("DISCORD_TOKEN missing. Put it in .env.")
     log_dir = Path(os.getenv("LOG_DIR", "logs"))
     log_dir.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
@@ -709,8 +706,19 @@ if __name__ == "__main__":
         handlers=[logging.StreamHandler(),
                   logging.handlers.RotatingFileHandler(log_dir / "bot.log", maxBytes=1_000_000,
                                                        backupCount=3, encoding="utf-8")])
+    # Setup errors exit with 0: restarting cannot fix them, so run_bot.ps1 must stop, not retry forever
+    token = os.getenv("DISCORD_TOKEN")
+    if not token:
+        log.error("DISCORD_TOKEN missing. Put it in .env.")
+        raise SystemExit(0)
     try:
         bot.run(token, log_handler=None)
+    except discord.LoginFailure:
+        log.error("Discord refused the token. Reset it in the Developer Portal and update .env.")
+        raise SystemExit(0)
+    except discord.PrivilegedIntentsRequired:
+        log.error("Turn on Server Members Intent in the Developer Portal (Bot tab), then start again.")
+        raise SystemExit(0)
     except Exception:
         log.exception("Bot crashed")
         raise SystemExit(1)  # nonzero: run_bot.ps1 restarts it

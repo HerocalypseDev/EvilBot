@@ -4,8 +4,13 @@ DONATION_AMOUNT = 50_000
 RECENT_DONORS = 10
 DATA_PAGE = 15  # rows per page in the data channel
 MEMBER_ROLE_NAME = "ingame guild member"
-STAFF_ROLE_NAME = "Officer"
 # Minutes before 00:00 UTC. Env override lets you test a reminder at any time of day, e.g. REMINDER_MINUTES=870
-REMINDER_MINUTES = tuple(int(m) for m in os.getenv("REMINDER_MINUTES", "60").split(","))
+try:
+    REMINDER_MINUTES = tuple(int(m) for m in os.getenv("REMINDER_MINUTES", "60").split(","))
+except ValueError:
+    raise SystemExit("REMINDER_MINUTES must be whole numbers separated by commas, e.g. 60 or 120,60.")
+# under 5 the send window crosses midnight and is cut short; over 1435 it never opens
+if not all(5 <= m <= 1435 for m in REMINDER_MINUTES):
+    raise SystemExit("REMINDER_MINUTES values must be from 5 to 1435.")
 BACKUP_HOUR_UTC = 4
 IGN_MIN, IGN_MAX = 2, 32
