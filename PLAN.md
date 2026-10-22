@@ -112,7 +112,7 @@ One row per reminder sent. Stops a repeat ping after a restart.
 |---|---|---|
 | guild_id | INTEGER | |
 | day_utc | TEXT | `YYYY-MM-DD` the reminder is for |
-| minutes_before | INTEGER | 180, 120, or 60 |
+| minutes_before | INTEGER | 60 |
 | sent_at | TEXT | ISO 8601 UTC. Set even if the reminder was skipped as late. |
 | | | PK (guild_id, day_utc, minutes_before) |
 
@@ -205,13 +205,13 @@ Board names are in-game names only. A tracked member without a link appears as `
 - Reset timestamp on the board is next midnight UTC as Unix epoch, rendered by Discord in each viewer's time zone.
 
 ### Reset reminder pings
-- Times: **180 minutes**, **120 minutes**, and **60 minutes** before 00:00 UTC (21:00, 22:00, 23:00 UTC). Set in `config.py` as `REMINDER_MINUTES = (180, 120, 60)`.
+- Time: one reminder, **60 minutes** before 00:00 UTC (23:00 UTC). Set in `config.py` as `REMINDER_MINUTES = (60,)`.
 - Where: the panel channel, as a plain message.
 - Who: tracked members (role `ingame guild member`, not bots) with no `approved` donation for the UTC day. Linked or not, they are pinged by `<@id>`.
 - Format: one message per 50 members. Skipped entirely when the list is empty.
 - The loop in the 60-second task sends a reminder when `now` is at or after its time and before time + 5 minutes. It writes a `reminders` row either way. A row already present means no send.
 - Late (bot started after the 5-minute window): row written, nothing sent. No catch-up pings in the last minutes before reset.
-- Maximum three reminder messages per day, one per offset.
+- Maximum one reminder message group per day.
 
 ### Daily backup
 - At 04:00 UTC, the same 60-second loop writes a backup with `sqlite3.Connection.backup()` to `C:\EvilDonations\backups\donations-YYYY-MM-DD.db`, then copies it to the OneDrive backup folder (section 13). The loop only writes a file that does not exist yet, so it runs once a day and also catches up if the bot was off at 04:00.
@@ -280,7 +280,7 @@ Discordbot/
 7. Officer runs `/log` for a linked member → same result, `logged_by` set.
 8. `/undo` → board updates, member can press the button again.
 9. Simulate rollover (set `board_day` old or change system clock in test) → board shows yesterday totals and resets today.
-10. Set the clock to 22:59 UTC (or shorten `REMINDER_MINUTES` for the test) → reminder pings only members without a donation today.
+10. Set the clock to 22:59 UTC (or set `REMINDER_MINUTES` for the test) → reminder pings only members without a donation today.
 11. Restart bot inside the reminder window → no second ping.
 12. `/history` shows approved and voided rows.
 13. `/export` → CSV opens in Excel, non-ASCII names correct. No XP column.
@@ -332,7 +332,7 @@ Order is fixed.
 Resolved in v3:
 - Unlinked tracked members show on the board as `Discord name (not linked)`.
 - Backup destination: OneDrive folder copy, daily at 04:00 UTC, 30-day retention.
-- Reminders: 180, 120, and 60 minutes before reset (21:00, 22:00, 23:00 UTC), in the panel channel, mentioning only members with no donation today.
+- Reminders: one ping, 60 minutes before reset (23:00 UTC) in v5 and later, in the panel channel, mentioning only members with no donation today. Earlier drafts had three.
 - PC uptime: on about 20 hours a day, off about 4.
 
 Resolved in v4:
