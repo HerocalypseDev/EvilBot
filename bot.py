@@ -317,8 +317,15 @@ def iso_utc(text):
     return datetime.fromisoformat(text)
 
 
+def warn_if_role_not_pinged(message, role_id):
+    if role_id not in message.raw_role_mentions:
+        log.warning("Role ping did not notify anyone in guild %s: turn on 'Allow anyone to @mention "
+                    "this role' for the member role, or give the bot Mention All Roles", message.guild.id)
+
+
 async def post_boss_poll(guild, channel, role_id, cycle_start):
     message = await channel.send(boss.poll_text(f"<@&{role_id}>", cycle_start))
+    warn_if_role_not_pinged(message, role_id)
     db.add_boss_poll(bot.db, guild.id, cycle_start.isoformat(), message.id)
     for emoji in boss.EMOJIS:
         await message.add_reaction(emoji)
@@ -378,7 +385,7 @@ async def _boss_tick(guild, row, now):
     # the slot is claimed before sending, so a restart never double-pings
     if pick is not None and db.resolve_boss_poll(bot.db, guild.id, latest["cycle_start"],
                                                  times[pick].isoformat()):
-        await channel.send(boss.ping_text(role.mention, times[pick]))
+        warn_if_role_not_pinged(await channel.send(boss.ping_text(role.mention, times[pick])), role.id)
         log.info("Boss ping for %s in guild %s, votes %s", times[pick].isoformat(), guild.id, votes)
 
 
