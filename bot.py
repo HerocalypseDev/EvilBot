@@ -53,13 +53,10 @@ def board_embed(data):
         title="Evil Donations — guild board",
         description=f"Today (UTC): **{data['today_count']}** donated\n"
                     f"Resets <t:{data['reset_ts']}:t> (your local time)")
-    if data["recent"]:  # three inline fields line up as columns: one row per donor
-        embed.add_field(name=f"Discord name (last {RECENT_DONORS})",
-                        value="\n".join(board.short(name) for name, _, _ in data["recent"]))
-        embed.add_field(name="In-game name", value="\n".join(board.short(ign) for _, ign, _ in data["recent"]))
-        embed.add_field(name="Donated at", value="\n".join(f"<t:{ts}:t>" for _, _, ts in data["recent"]))
-    else:
-        embed.add_field(name=f"Last {RECENT_DONORS} donors", value="Nobody yet.", inline=False)
+    # one line per donor: side-by-side columns stack up on mobile
+    recent = "\n".join(f"{board.short(name)} · {board.short(ign)} · <t:{ts}:t>" for name, ign, ts in data["recent"])
+    embed.add_field(name=f"Last {RECENT_DONORS} donors (Discord · in-game · time)", value=recent or "Nobody yet.",
+                    inline=False)
     embed.add_field(name=f"Not donated yet ({len(data['waiting'])})",
                     value=board.join_capped([discord.utils.escape_markdown(n) for n in data["waiting"]],
                                             sep="\n")  # one name per line
@@ -104,10 +101,10 @@ def data_section_embed(guild_id, key, rows):
     chunk, page, pages = board.paginate(rows, data_pages.get((guild_id, key), 0), DATA_PAGE)
     data_pages[(guild_id, key)] = page
     embed = discord.Embed(title=f"{title} ({len(rows)})")
-    if chunk:
-        for n, column in enumerate(columns):
-            values = [f"<t:{row[n]}:t>" if column == "Donated at" else board.short(row[n]) for row in chunk]
-            embed.add_field(name=column, value="\n".join(values))
+    if chunk:  # one line per person: side-by-side columns stack up on mobile
+        lines = [" · ".join(f"<t:{cell}:t>" if column == "Donated at" else board.short(cell)
+                            for column, cell in zip(columns, row)) for row in chunk]
+        embed.add_field(name=" · ".join(columns), value="\n".join(lines), inline=False)
     else:
         embed.description = "Nobody."
     embed.set_footer(text=f"Page {page + 1}/{pages}")

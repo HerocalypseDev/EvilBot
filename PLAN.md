@@ -201,7 +201,7 @@ Today (UTC): 12 donated
 Resets <t:…:t>  (shown in your local time)
 
 Discord name (last 10)   In-game name   Donated at
-DiscordA                 PlayerA         14:05      (three side-by-side columns, one row per donor;
+DiscordA                 PlayerA         14:05      (one line per donor: Discord · in-game · time, so it reads the same on mobile;
 ...                                                  time shown in each viewer's own time zone)
 
 Not donated yet (9)
@@ -423,7 +423,7 @@ A read-only channel that shows who has and has not donated today. `/data start c
 4. **Not linked (N):** in-game name only. The roster names nobody has claimed with `/link` yet. Sorted by name.
 
 - List 3 holds only linked members, so every row has both names. List 4 comes from the roster, not from Discord members: a role member who is not on the roster appears nowhere until staff add their name.
-- Tracked = role `ingame guild member`, bots ignored. Names longer than 16 characters are cut with an ellipsis so the columns line up.
+- Tracked = role `ingame guild member`, bots ignored. Each person is one line, `Discord name · in-game name · time`, so phones show it the same as PCs. Names longer than 16 characters are cut with an ellipsis.
 - Each list shows 15 rows per page (`DATA_PAGE` in `config.py`). Previous and Next buttons under it change the shared message for everyone. The page resets to 1 after a bot restart.
 - Refresh triggers are the same as the board: donate button, `/log`, `/undo`, setup, new day, reminders sent. The messages are edited in place. If one is deleted, the next refresh deletes the rest and posts all four again.
 - The bot needs View Channel, Send Messages, and Embed Links in the channel. Make it read-only for members (Send Messages off). The buttons still work.
