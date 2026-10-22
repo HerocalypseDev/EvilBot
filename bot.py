@@ -343,7 +343,15 @@ async def count_votes(guild, channel, message_id, role_id):
     return votes
 
 
+_boss_lock = asyncio.Lock()  # /boss start and the minute loop must not post the same poll twice
+
+
 async def boss_tick(guild, row, now):
+    async with _boss_lock:
+        await _boss_tick(guild, row, now)
+
+
+async def _boss_tick(guild, row, now):
     """Post polls, watch the votes, and ping the guild 10 minutes before the winning time."""
     channel = guild.get_channel(row["boss_channel_id"])
     role = guild.get_role(row["member_role_id"])
