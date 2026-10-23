@@ -565,6 +565,26 @@ async def unlink(interaction: discord.Interaction, member: discord.User | None =
     await interaction.response.send_message(msg, ephemeral=True)
 
 
+@bot.tree.command(name="link_member", description="Staff: link a member to an in-game name from the roster.")
+@app_commands.guild_only()
+@app_commands.describe(member="The member to link", ingame_username="Pick the in-game name from the list")
+@app_commands.autocomplete(ingame_username=link_autocomplete)
+async def link_member(interaction: discord.Interaction, member: discord.Member, ingame_username: str):
+    if not await require_staff(interaction):
+        return
+    try:
+        name = db.link(bot.db, interaction.guild_id, member.id, ingame_username)
+    except db.NotInRoster:
+        msg = "That name is not on the roster. Add it with /roster add first."
+    except db.AlreadyLinked:
+        msg = f"{member.display_name} is already linked. Use /unlink first."
+    except db.IgnTaken:
+        msg = "That in-game name is already taken."
+    else:
+        msg = f"Linked {member.display_name} to **{name}**."
+    await interaction.response.send_message(msg, ephemeral=True)
+
+
 @bot.tree.command(description="Show who donated and who has not on a day (UTC).")
 @app_commands.guild_only()
 @app_commands.describe(date="Day as YYYY-MM-DD. Default: today (UTC).")

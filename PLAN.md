@@ -173,6 +173,7 @@ The index stops duplicates even if two presses overlap. A voided row does not bl
 | `/roster add names` | Staff | Adds in-game names to the roster. Separate them with commas or new lines. Skips duplicates and names outside 2 to 32 characters. |
 | `/roster remove name` | Staff | Removes a name from the roster. Anyone already linked to it stays linked. |
 | `/roster list` | Staff | Shows the roster and which names are taken. Sent as a file when long. |
+| `/link_member member ingame_username` | Staff | Links a member to a roster name, same rules as `/link`. Refuses if the member is already linked (use `/unlink` first). |
 | `/unlink [member]` | Self, or staff for others | Removes link. Staff can paste the user ID of someone who left the server, to free their in-game name. |
 | `/undo submission_id` | Staff | Sets approved donation to `voided`, refreshes board |
 | `/stop` | Staff | Posts downtime notice on panel, then shuts the bot down cleanly. |
