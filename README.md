@@ -16,6 +16,17 @@ Discord bot that logs the daily 50,000 guild donation. Design: `PLAN.md`.
 
 `/stop` (staff) posts the offline notice and ends the bot. Crashes restart after 5 seconds.
 
+## Run on Wispbyte
+
+The live bot runs here. Only one copy may run with the token: stop the PC copy first.
+
+1. Set `DISCORD_TOKEN` in the panel's environment or `.env`. Set `DB_PATH` and `BACKUP_DIR` to paths on the panel's disk.
+2. Install with `pip install -r requirements.txt`.
+3. Start with `python bot.py`. The panel must restart it after a crash. `scripts\run_bot.ps1` is Windows-only and not used here.
+4. Update: `/stop` (posts the offline notice), back up `donations.db`, upload the changed files (e.g. `bot.py`), run `pip install -r requirements.txt`, start again.
+
+`donations.db` and `.env` are not in git. Updates must not overwrite them.
+
 ## Tests
 
 `venv\Scripts\python -m pytest`
