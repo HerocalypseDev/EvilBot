@@ -5,6 +5,7 @@ Status: decisions final. No open questions. Build starts at M0.
 Changes from v2: guild XP removed, reset reminder pings added, hosting moved from Oracle VM to a Windows PC.
 Changes in v4: auto-approve, `/log` for staff, downtime notice on `/stop`, one `Officer` staff role, `ingame guild member` role name.
 Changes in v6: guild boss time polls (section 17).
+Changes in v7: guild boss attendance board, data channel and staff commands (section 19).
 Changes in v5: no screenshots. One button press logs a fixed 50,000 donation. `/proof`, amount modal, image hashing, and review channel removed.
 
 Bot name: **Evil Donations**
@@ -85,6 +86,10 @@ Six tables. Every row carries `guild_id`. Cheap insurance even though only one s
 | boss_channel_id | INTEGER NULL | Channel for boss time polls. NULL = boss polls off. |
 | data_channel_id | INTEGER NULL | Channel for the data lists. NULL = off. |
 | data_message_ids | TEXT NULL | JSON list of the four data message ids (header, donated, not donated, not linked) |
+| attend_channel_id | INTEGER NULL | Channel for the attendance board. NULL = off. |
+| attend_message_id | INTEGER NULL | Attendance board message (embed plus "I attended" button) |
+| attend_data_channel_id | INTEGER NULL | Channel for the attendance data lists. NULL = off. |
+| attend_data_message_ids | TEXT NULL | JSON list of the four attendance data message ids |
 
 ### `roster`
 The in-game names members may pick in `/link`.
@@ -139,6 +144,27 @@ One row per reminder sent. Stops a repeat ping after a restart.
 | sent_at | TEXT | ISO 8601 UTC. Set even if the reminder was skipped as late. |
 | | | PK (guild_id, day_utc, minutes_before) |
 
+### `bosses`
+One row per boss ping, at the winning poll time. Cycles with no ping have no row.
+| Column | Type | Notes |
+|---|---|---|
+| id | INTEGER PK AUTOINCREMENT | |
+| guild_id | INTEGER | |
+| day_utc | TEXT | UTC date of boss_time |
+| boss_time | TEXT | ISO 8601 UTC winning time, e.g. 02:00. UNIQUE (guild_id, boss_time) |
+| opened_at | TEXT NULL | Set when the "logging open" ping is claimed, so a restart never pings twice |
+
+### `attendance`
+| Column | Type | Notes |
+|---|---|---|
+| boss_id | INTEGER | `bosses.id` |
+| discord_id | INTEGER | |
+| discord_name | TEXT | Snapshot at log time |
+| ign | TEXT | Snapshot of in-game name at log time |
+| logged_by | INTEGER NULL | Staff discord id when added with `/boss_add` |
+| created_at | TEXT | ISO 8601 UTC |
+| | | PK (boss_id, discord_id). `/boss_remove` deletes the row. |
+
 ### Status lifecycle
 ```
 approved → voided   (by /undo)
@@ -184,6 +210,14 @@ The index stops duplicates even if two presses overlap. A voided row does not bl
 | `/log member [day]` | Staff | Records an approved 50,000 donation for a linked member. `day` = `today` (default) or `yesterday`. Refreshes board. |
 | `/history [date]` | Any member | Shows one UTC day (`YYYY-MM-DD`, default today): donated and not donated, 15 rows per page with Previous and Next buttons (ephemeral). Same lists as the board. |
 | `/export` | Staff | Sends CSV of all submissions (ephemeral) |
+| `/attendance start channel` / `stop` | Staff | Posts or stops the boss attendance board (section 19). |
+| `/attendance_data start channel` / `stop` | Staff | Posts or stops the attendance data lists (section 19). |
+| `/boss_attendance [date] [boss]` | Staff | Attended and not attended for one boss. `boss` lists that day's bosses as `14:00 UTC`; default the latest. |
+| `/boss_member member [date]` | Staff | "N of M guild bosses" on a day, then each boss: attended or missed. |
+| `/boss_add member [date] [boss]` | Staff | Marks a linked member as attended for any past boss. |
+| `/boss_remove member [date] [boss]` | Staff | Removes an attendance. Accepts a user ID of someone who left. |
+| `/boss_report [from] [to]` | Staff | Attended/total per linked member, fewest first. Default the last 7 days, at most 31. |
+| `/boss_missed [count]` | Staff | Linked members who attended none of the last `count` bosses (default 4). |
 
 "Staff" = Manage Server, or `Officer` role.
 
@@ -330,6 +364,11 @@ Discordbot/
 20. Restart the bot inside the 10 minutes before a time → exactly one ping.
 21. `/data start channel` → four messages appear: Data header, Donated today, Not donated yet, Not linked. Press the donate button → the member moves from Not donated to Donated, with a local time.
 22. With more than 15 names in a section (add test names with `/roster add` and `/link`) → page 1 of 2 shows 15 rows. Next shows the rest, Previous goes back. Delete one data message → the next refresh reposts all four.
+23. `/attendance start channel` and `/attendance_data start channel` → board says "No boss yet", data shows four messages.
+24. Let a boss ping go out (winner e.g. 02:00). Before 02:00, "I attended" says logging is closed. At 02:00 → role ping in the attendance channel, board moves below it and shows open until 03:00.
+25. Linked role member presses "I attended" → listed as attended on the board and data channel. Second press → "already logged". At 03:00 → board says closed and presses are refused.
+26. `/boss_add` and `/boss_remove` on that boss → board and data update. `/boss_attendance` and `/boss_member` show the change.
+27. `/boss_report` and `/boss_missed 1` list the members who missed it. Restart inside the hour → no second open ping.
 
 ## 13. PC hosting plan
 
@@ -362,6 +401,7 @@ Order is fixed.
 | M7 | Live rollout | Live server configured, officers briefed on `/log` and `/undo` |
 | M8 | Boss time polls | Manual steps 16 to 20 pass |
 | M9 | Data channel | Manual steps 21 and 22 pass |
+| M10 | Boss attendance | Manual steps 23 to 27 pass |
 
 ## 15. Out of scope (for now)
 
@@ -428,3 +468,15 @@ A read-only channel that shows who has and has not donated today. `/data start c
 - Each list shows 15 rows per page (`DATA_PAGE` in `config.py`). Previous and Next buttons under it change the shared message for everyone. The page resets to 1 after a bot restart.
 - Refresh triggers are the same as the board: donate button, `/log`, `/undo`, setup, new day, reminders sent. The messages are edited in place. If one is deleted, the next refresh deletes the rest and posts all four again.
 - The bot needs View Channel, Send Messages, and Embed Links in the channel. Make it read-only for members (Send Messages off). The buttons still work.
+
+## 19. Boss attendance
+
+Members log that they joined a guild boss. A boss is the winning poll time the bot pinged (section 17). Example: 00:00 cycle, winner 02:00: ping at 01:50, logging open 02:00 to 03:00, boss saved as 02:00 UTC on that UTC day. If the bot sent no ping for a cycle, no boss is recorded and nobody is counted as missing.
+
+- **Attendance channel:** `/attendance start channel` posts a board with an "I attended" button. At the boss time the bot pings the `ingame guild member` role there ("logging open"). The board moves to the bottom after the ping, the same way as the donation board.
+- **Board:** the newest boss that has started, open or closed, with the close time in local time. Attended (in-game names), Not attended (role members, `Name (not linked)` when not linked), and today's bosses with their counts.
+- **Button:** role `ingame guild member` and a `/link` are needed. Works only from the boss time to 1 hour after (`ATTEND_WINDOW` in `boss.py`). One press per boss.
+- **Data channel:** `/attendance_data start channel` posts a header (boss time, open or closed, counts) and three lists, 15 rows per page: Attended (Discord · in-game · logged at), Not attended (linked members), Bosses today (in-game · attended/total for the UTC day).
+- **Staff fixes:** `/boss_add` and `/boss_remove` work on any past boss. They refresh the board and the data channel.
+- **Who is counted:** current role members only. A member who joined later shows as missing the earlier bosses.
+- **Restarts:** the open ping is claimed in `bosses.opened_at` before sending. If the bot comes back after the hour, no ping.
