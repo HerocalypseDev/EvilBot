@@ -48,7 +48,20 @@ def tracked_members(guild, member_role_id):
     return [(m.id, m.display_name) for m in role.members if not m.bot] if role else []
 
 
-def board_embed(data):
+BRAND = discord.Colour(0xC0392B)
+
+
+def brand(embed, guild=None, footer=None):
+    """Brand colour, the guild icon (when given), and 'Last updated <time>' in the footer."""
+    embed.colour = BRAND
+    embed.timestamp = datetime.now(timezone.utc)
+    embed.set_footer(text=f"{footer} · Last updated" if footer else "Last updated")
+    if guild and guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
+    return embed
+
+
+def board_embed(data, guild):
     embed = discord.Embed(
         title="Evil Donations — guild board",
         description=f"Today (UTC): **{data['today_count']}** donated\n"
@@ -64,8 +77,7 @@ def board_embed(data):
     embed.add_field(name="Yesterday (UTC)",
                     value=f"Donated: {data['yesterday_count']} · Coins: {data['yesterday_coins']:,}",
                     inline=False)
-    embed.set_footer(text="Press Log donation once per day, after you donate in the game.")
-    return embed
+    return brand(embed, guild, "Press Log donation once per day, after you donate in the game.")
 
 
 _board_lock = asyncio.Lock()  # two quick refreshes must not post two boards
@@ -93,25 +105,25 @@ ATTEND_SECTIONS = {  # the attendance data channel, same layout
 data_pages = {}  # (guild_id, section) -> page shown. Resets to page 1 after a restart.
 
 
-def data_header_embed(sections):
+def data_header_embed(sections, guild):
     counts = {key: len(sections[key]) for key in DATA_SECTIONS}
-    return discord.Embed(
+    return brand(discord.Embed(
         title="Data",
         description=f"{db.today_utc()} (UTC) · resets <t:{board.next_reset_ts()}:t> (your local time)\n"
                     f"Donated: **{counts['donated']}** · Not donated: **{counts['not_donated']}** · "
-                    f"Not linked: **{counts['not_linked']}**")
+                    f"Not linked: **{counts['not_linked']}**"), guild)
 
 
-def attend_header_embed(info, sections):
+def attend_header_embed(info, sections, guild):
     if not info:
         text = "No boss yet."
     else:
         boss_ts, close_ts, state = info
         text = f"Boss at <t:{boss_ts}:t> · logging {'open until' if state == 'open' else 'closed at'} <t:{close_ts}:t>"
-    return discord.Embed(
+    return brand(discord.Embed(
         title="Boss attendance data",
         description=f"{text}\nAttended: **{len(sections['attended'])}** · "
-                    f"Not attended: **{len(sections['not_attended'])}**")
+                    f"Not attended: **{len(sections['not_attended'])}**"), guild)
 
 
 def data_section_embed(guild_id, key, rows):
@@ -125,8 +137,7 @@ def data_section_embed(guild_id, key, rows):
         embed.add_field(name=" · ".join(columns), value="\n".join(lines), inline=False)
     else:
         embed.description = "Nobody."
-    embed.set_footer(text=f"Page {page + 1}/{pages}")
-    return embed
+    return brand(embed, footer=f"Page {page + 1}/{pages}")
 
 
 class DataView(discord.ui.View):
@@ -165,7 +176,7 @@ async def refresh_data(guild):
             return
         sections = board.data_sections(bot.db, guild.id, tracked_members(guild, row["member_role_id"]),
                                        db.today_utc())
-        embeds = [data_header_embed(sections)] + [data_section_embed(guild.id, key, sections[key])
+        embeds = [data_header_embed(sections, guild)] + [data_section_embed(guild.id, key, sections[key])
                                                   for key in DATA_SECTIONS]
         return await show_sections(guild, channel, row["data_message_ids"], "data_message_ids", embeds,
                                    DATA_SECTIONS)
@@ -180,7 +191,7 @@ async def refresh_attend_data(guild):
             return
         info, sections = board.attend_data_sections(bot.db, guild.id, tracked_members(guild, row["member_role_id"]),
                                                     datetime.now(timezone.utc))
-        embeds = [attend_header_embed(info, sections)] + [data_section_embed(guild.id, key, sections[key])
+        embeds = [attend_header_embed(info, sections, guild)] + [data_section_embed(guild.id, key, sections[key])
                                                           for key in ATTEND_SECTIONS]
         return await show_sections(guild, channel, row["attend_data_message_ids"], "attend_data_message_ids",
                                    embeds, ATTEND_SECTIONS)
@@ -224,7 +235,7 @@ async def refresh_board_message(guild):
             return
         data = board.board_data(bot.db, guild.id, tracked_members(guild, row["member_role_id"]),
                                 db.today_utc(), db.yesterday_utc())
-        embed = board_embed(data)
+        embed = board_embed(data, guild)
         old = channel.get_partial_message(row["status_message_id"])
         try:
             if channel.last_message_id == old.id:
@@ -273,11 +284,11 @@ _attend_lock = asyncio.Lock()
 _attend_seen = {}  # guild_id -> (boss id, state, day) the board last showed
 
 
-def attend_embed(data):
+def attend_embed(data, guild):
     embed = discord.Embed(title="Guild boss attendance")
     if not data:
         embed.description = "No boss yet. Logging opens when the next boss starts."
-        return embed
+        return brand(embed, guild)
     boss_at, close = f"<t:{data['boss_ts']}:t>", f"<t:{data['close_ts']}:t>"
     embed.description = (f"Boss at {boss_at}: logging open until {close} (<t:{data['close_ts']}:R>)."
                          if data["state"] == "open" else
@@ -291,8 +302,7 @@ def attend_embed(data):
     embed.add_field(name="Today's bosses (UTC day)",
                     value="\n".join(f"<t:{ts}:t> · {n} attended" for ts, n in data["today"]) or "None yet.",
                     inline=False)
-    embed.set_footer(text="Press I attended during the hour after the boss starts.")
-    return embed
+    return brand(embed, guild, "Press I attended during the hour after the boss starts.")
 
 
 async def refresh_attendance(guild):
@@ -308,7 +318,7 @@ async def refresh_attend_board(guild):
         if not channel or not row["attend_message_id"]:
             return
         embed = attend_embed(board.attend_board_data(bot.db, guild.id, tracked_members(guild, row["member_role_id"]),
-                                                     datetime.now(timezone.utc)))
+                                                     datetime.now(timezone.utc)), guild)
         old = channel.get_partial_message(row["attend_message_id"])
         try:
             if channel.last_message_id == old.id:
@@ -398,8 +408,7 @@ class HistoryView(discord.ui.View):
             embed.add_field(name=f"{done} ({self.counts[0]})", value="\n".join(donated), inline=False)
         if waiting:
             embed.add_field(name=f"{not_done_field} ({self.counts[1]})", value="\n".join(waiting), inline=False)
-        embed.set_footer(text=f"Page {self.page + 1}/{pages}")
-        return embed
+        return brand(embed, footer=f"Page {self.page + 1}/{pages}")
 
     def _update_buttons(self):
         pages = board.paginate(self.rows, self.page, DATA_PAGE)[2]
@@ -448,7 +457,8 @@ bot = Bot()
 async def post_offline_notice():
     """Replace each board with an offline notice and no button. Runs on /stop and Ctrl+C."""
     notice = discord.Embed(title="Evil Donations — offline",
-                           description="Bot offline. Do not log donations. Contact an officer.")
+                           description="Bot offline. Do not log donations. Contact an officer.",
+                           colour=discord.Colour.dark_grey(), timestamp=datetime.now(timezone.utc))
     for guild in bot.guilds:
         row = db.get_guild(bot.db, guild.id)
         channel = row and guild.get_channel(row["panel_channel_id"])
