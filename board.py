@@ -51,7 +51,7 @@ def data_sections(conn, guild_id, tracked, today):
     """Lists for the data channel. tracked = [(discord_id, display_name)].
     donated: (discord name, in-game name, unix time), newest first.
     not_donated: linked members with no donation today.
-    not_linked: roster names nobody has claimed with /link yet (in-game name only)."""
+    not_linked: roster names nobody is linked to yet (in-game name only)."""
     donated_ids = set()
     donated = []
     for r in db.approved_for_day(conn, guild_id, today):

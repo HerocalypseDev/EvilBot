@@ -255,7 +255,7 @@ class PanelView(discord.ui.View):
         ign = db.get_ign(bot.db, interaction.guild_id, interaction.user.id)
         if not ign:
             return await interaction.response.send_message(
-                "Link your in-game name first with /link.", ephemeral=True)
+                "Ask an officer to link your in-game name first.", ephemeral=True)
         try:
             db.record(bot.db, interaction.guild_id, interaction.user.id,
                       interaction.user.display_name, ign, db.today_utc())
@@ -339,7 +339,7 @@ class AttendView(discord.ui.View):
         ign = db.get_ign(bot.db, interaction.guild_id, interaction.user.id)
         if not ign:
             return await interaction.response.send_message(
-                "Link your in-game name first with /link.", ephemeral=True)
+                "Ask an officer to link your in-game name first.", ephemeral=True)
         now = datetime.now(timezone.utc)
         current = db.started_boss(bot.db, interaction.guild_id, now.isoformat(timespec="seconds"))
         if not current or boss.attend_state(iso_utc(current["boss_time"]), now) != "open":
@@ -635,30 +635,12 @@ async def setup(interaction: discord.Interaction, panel_channel: discord.TextCha
     await interaction.followup.send(f"Panel posted in {panel_channel.mention}.", ephemeral=True)
 
 
-@bot.tree.command(description="Link your in-game name.")
-@app_commands.guild_only()
-@app_commands.describe(ingame_username="Pick your in-game name from the list")
-async def link(interaction: discord.Interaction, ingame_username: str):
-    try:
-        name = db.link(bot.db, interaction.guild_id, interaction.user.id, ingame_username)
-    except db.NotInRoster:
-        msg = "Pick your name from the list. If it is not there, ask an officer to add it."
-    except db.AlreadyLinked:
-        msg = "You are already linked. Use /unlink first to change it."
-    except db.IgnTaken:
-        msg = "That in-game name is already taken."
-    else:
-        msg = f"Linked to **{name}**."
-    await interaction.response.send_message(msg, ephemeral=True)
-
-
-@link.autocomplete("ingame_username")
 async def link_autocomplete(interaction: discord.Interaction, current: str):
     names = db.roster_names(bot.db, interaction.guild_id, current, only_free=True, limit=25)
     return [app_commands.Choice(name=n, value=n) for n in names]
 
 
-roster_group = app_commands.Group(name="roster", description="The in-game names members pick in /link.",
+roster_group = app_commands.Group(name="roster", description="The in-game names staff pick in /link_member.",
                                   guild_only=True)
 
 
@@ -743,10 +725,12 @@ async def link_member(interaction: discord.Interaction, member: discord.Member, 
     await interaction.response.send_message(msg, ephemeral=True)
 
 
-@bot.tree.command(description="Show who donated and who has not on a day (UTC).")
+@bot.tree.command(description="Staff: show who donated and who has not on a day (UTC).")
 @app_commands.guild_only()
 @app_commands.describe(date="Day as YYYY-MM-DD. Default: today (UTC).")
 async def history(interaction: discord.Interaction, date: str | None = None):
+    if not await require_staff(interaction):
+        return
     try:
         day = datetime.strptime(date, "%Y-%m-%d").date().isoformat() if date else db.today_utc()
     except ValueError:

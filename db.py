@@ -256,7 +256,7 @@ def mark_reminder(conn, guild_id, day, minutes_before):
             (guild_id, day, minutes_before, now_iso())).rowcount == 1
 
 
-# --- roster: the in-game names members can pick in /link ---
+# --- roster: the in-game names staff can pick in /link_member ---
 
 def parse_names(text):
     """Split on commas or new lines. Returns (valid names, names with a bad length), no duplicates."""

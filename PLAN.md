@@ -23,12 +23,12 @@ A Discord bot for a game guild. Each member donates 50,000 coins per day in the 
 | Donation amount | Always 50,000 coins. No amount input. |
 | Frequency | One approved donation per player per UTC day. |
 | Day reset | 00:00 UTC. Members see reset time in their own local time (Discord `<t:UNIX:t>`). |
-| Identity | Member links Discord user to in-game name with `/link`. One name per member, names unique per server (ignoring case). Staff load the guild's in-game names into a roster with `/roster add`. `/link ingame_username` lists the free roster names as the member types, and accepts only a name from the roster. Staff fix wrong links with `/unlink`. |
+| Identity | Staff link a Discord user to an in-game name with `/link_member`. One name per member, names unique per server (ignoring case). Staff load the guild's in-game names into a roster with `/roster add`. `/link_member` lists the free roster names as staff type, and accepts only a name from the roster. Staff fix wrong links with `/unlink`. |
 | Alts | Not supported. One account per player. |
 | Who is tracked | Members with the Discord role **`ingame guild member`** only. Bots ignored. |
 | Submission | Member presses "Log donation" button. Bot records an approved 50,000 donation for today. No proof, no review. |
 | Trust | No check that the member really donated in the game. Accepted risk. Staff fix mistakes with `/undo`. |
-| Notifications | No DMs. No notifications except reset reminder pings in the panel channel (section 9). Members check status with `/history` or the board. |
+| Notifications | No DMs. No notifications except reset reminder pings in the panel channel (section 9). Members check status on the board. Staff use `/history`. |
 | Status board | Auto-updated embed. See section 7. Uses in-game names only. |
 | History | Kept forever, including members who leave the server. |
 | Data channel | A separate channel with a Data header and three lists: donated today (Discord name, in-game name, time), not donated yet (Discord name, in-game name), not linked (in-game names nobody has claimed yet). 15 rows per page with Previous and Next buttons. Section 18. |
@@ -92,7 +92,7 @@ Six tables. Every row carries `guild_id`. Cheap insurance even though only one s
 | attend_data_message_ids | TEXT NULL | JSON list of the four attendance data message ids |
 
 ### `roster`
-The in-game names members may pick in `/link`.
+The in-game names staff may pick in `/link_member`.
 | Column | Type | Notes |
 |---|---|---|
 | guild_id | INTEGER | |
@@ -195,11 +195,10 @@ The index stops duplicates even if two presses overlap. A voided row does not bl
 | Command | Who | What it does |
 |---|---|---|
 | `/setup panel_channel officer_role` | Manage Server | Saves config, finds role `ingame guild member`, posts the board with its button. Fails with a clear message if `ingame guild member` is missing. |
-| `/link ingame_username` | Any member | Links Discord user to an in-game name. The parameter autocompletes with roster names not yet taken (25 shown, narrowed as you type). Names not on the roster are refused. |
 | `/roster add names` | Staff | Adds in-game names to the roster. Separate them with commas or new lines. Skips duplicates and names outside 2 to 32 characters. |
 | `/roster remove name` | Staff | Removes a name from the roster. Anyone already linked to it stays linked. |
 | `/roster list` | Staff | Shows the roster and which names are taken. Sent as a file when long. |
-| `/link_member member ingame_username` | Staff | Links a member to a roster name, same rules as `/link`. Refuses if the member is already linked (use `/unlink` first). |
+| `/link_member member ingame_username` | Staff | Links a member to a roster name. The name autocompletes with roster names not yet taken (25 shown). Names not on the roster are refused. Refuses if the member is already linked (use `/unlink` first). |
 | `/unlink [member]` | Self, or staff for others | Removes link. Staff can paste the user ID of someone who left the server, to free their in-game name. |
 | `/undo submission_id` | Staff | Sets approved donation to `voided`, refreshes board |
 | `/stop` | Staff | Posts downtime notice on panel, then shuts the bot down cleanly. |
@@ -208,7 +207,7 @@ The index stops duplicates even if two presses overlap. A voided row does not bl
 | `/data start channel` | Staff | Posts the data lists in a channel (section 18). |
 | `/data stop` | Staff | Stops updating the data channel. Its messages stay. |
 | `/log member [day]` | Staff | Records an approved 50,000 donation for a linked member. `day` = `today` (default) or `yesterday`. Refreshes board. |
-| `/history [date]` | Any member | Shows one UTC day (`YYYY-MM-DD`, default today): donated and not donated, 15 rows per page with Previous and Next buttons (ephemeral). Same lists as the board. |
+| `/history [date]` | Staff | Shows one UTC day (`YYYY-MM-DD`, default today): donated and not donated, 15 rows per page with Previous and Next buttons (ephemeral). Same lists as the board. |
 | `/export` | Staff | Sends CSV of all submissions (ephemeral) |
 | `/attendance start channel` / `stop` | Staff | Posts or stops the boss attendance board (section 19). |
 | `/attendance_data start channel` / `stop` | Staff | Posts or stops the attendance data lists (section 19). |
@@ -291,7 +290,7 @@ Board names are in-game names only. A tracked member without a link appears as `
 | Case | Behavior |
 |---|---|
 | Button pressed without role `ingame guild member` | "Only guild members can log donations." |
-| Button pressed, member not linked | "Link your in-game name first with /link." |
+| Button pressed, member not linked | "Ask an officer to link your in-game name first." |
 | Button pressed, already donated today | "You already logged a donation today." |
 | `ingame guild member` role missing or renamed | `/setup` refuses with a message. Board does not guess. Reminders send nothing and log a warning. |
 | Member leaves server | Rows kept. Not in the not-donated list or reminders (not a current member). |
@@ -344,7 +343,7 @@ Discordbot/
 ### Manual (test server)
 1. `/setup` → panel and board posted. Missing `ingame guild member` role → refused.
 2. Member with role, not linked, presses button → blocked message.
-3. `/roster add` with 3 names → `/link` lists them. Pick one → linked. Second member: that name is gone from the list, and typing it by hand is refused. A name not on the roster is refused. `/unlink` → the name is back on the list.
+3. `/roster add` with 3 names → `/link_member` lists them. Pick one → linked. Second member: that name is gone from the list, and typing it by hand is refused. A name not on the roster is refused. `/unlink` → the name is back on the list.
 4. Linked member without the role presses button → blocked message.
 5. Linked member with the role presses button → logged 50,000, board shows donor in last 10, count +1.
 6. Same member presses again → "already logged".
@@ -363,7 +362,7 @@ Discordbot/
 19. Five minutes after the winning time → next poll for the next cycle appears.
 20. Restart the bot inside the 10 minutes before a time → exactly one ping.
 21. `/data start channel` → four messages appear: Data header, Donated today, Not donated yet, Not linked. Press the donate button → the member moves from Not donated to Donated, with a local time.
-22. With more than 15 names in a section (add test names with `/roster add` and `/link`) → page 1 of 2 shows 15 rows. Next shows the rest, Previous goes back. Delete one data message → the next refresh reposts all four.
+22. With more than 15 names in a section (add test names with `/roster add` and `/link_member`) → page 1 of 2 shows 15 rows. Next shows the rest, Previous goes back. Delete one data message → the next refresh reposts all four.
 23. `/attendance start channel` and `/attendance_data start channel` → board says "No boss yet", data shows four messages.
 24. Let a boss ping go out (winner e.g. 02:00). Before 02:00, "I attended" says logging is closed. At 02:00 → role ping in the attendance channel, board moves below it and shows open until 03:00.
 25. Linked role member presses "I attended" → listed as attended on the board and data channel. Second press → "already logged". At 03:00 → board says closed and presses are refused.
@@ -461,7 +460,7 @@ A read-only channel that shows who has and has not donated today. `/data start c
 1. **Data** (header): today's UTC date, the reset time in each viewer's local time, and the three counts.
 2. **Donated today (N):** Discord name, in-game name, and the time the donation was logged (Discord local-time tag). Newest first.
 3. **Not donated yet (N):** Discord name and in-game name of linked members with no approved donation today. Sorted by in-game name.
-4. **Not linked (N):** in-game name only. The roster names nobody has claimed with `/link` yet. Sorted by name.
+4. **Not linked (N):** in-game name only. The roster names nobody is linked to yet. Sorted by name.
 
 - List 3 holds only linked members, so every row has both names. List 4 comes from the roster, not from Discord members: a role member who is not on the roster appears nowhere until staff add their name.
 - Tracked = role `ingame guild member`, bots ignored. Each person is one line, `Discord name · in-game name · time`, so phones show it the same as PCs. Names longer than 16 characters are cut with an ellipsis.
@@ -475,7 +474,7 @@ Members log that they joined a guild boss. A boss is the winning poll time the b
 
 - **Attendance channel:** `/attendance start channel` posts a board with an "I attended" button. At the boss time the bot pings the `ingame guild member` role there ("logging open"). The board moves to the bottom after the ping, the same way as the donation board.
 - **Board:** the newest boss that has started, open or closed, with the close time in local time. Attended (in-game names), Not attended (role members, `Name (not linked)` when not linked), and today's bosses with their counts.
-- **Button:** role `ingame guild member` and a `/link` are needed. Works only from the boss time to 1 hour after (`ATTEND_WINDOW` in `boss.py`). One press per boss.
+- **Button:** role `ingame guild member` and a link (`/link_member`) are needed. Works only from the boss time to 1 hour after (`ATTEND_WINDOW` in `boss.py`). One press per boss.
 - **Data channel:** `/attendance_data start channel` posts a header (boss time, open or closed, counts) and three lists, 15 rows per page: Attended (Discord · in-game · logged at), Not attended (linked members), Bosses today (in-game · attended/total for the UTC day).
 - **Staff fixes:** `/boss_add` and `/boss_remove` work on any past boss. They refresh the board and the data channel.
 - **Who is counted:** current role members only. A member who joined later shows as missing the earlier bosses.
