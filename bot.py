@@ -1022,6 +1022,59 @@ async def boss_member(interaction: discord.Interaction, member: discord.Member, 
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
 
+@bot.tree.command(name="boss_add", description="Staff: mark a member as attended for a guild boss.")
+@app_commands.guild_only()
+@app_commands.describe(date="Day as YYYY-MM-DD. Default: today (UTC).",
+                       boss="Boss time. Default: the day's latest boss.")
+@app_commands.autocomplete(boss=boss_autocomplete)
+async def boss_add(interaction: discord.Interaction, member: discord.Member, date: str | None = None,
+                   boss: str | None = None):
+    if not await require_staff(interaction):
+        return
+    try:
+        day = parse_day(date)
+    except ValueError:
+        return await interaction.response.send_message(BAD_DATE, ephemeral=True)
+    ign = db.get_ign(bot.db, interaction.guild_id, member.id)
+    if not ign:
+        return await interaction.response.send_message("Member has no linked IGN.", ephemeral=True)
+    found = find_boss(interaction.guild_id, day, boss)
+    if not found:
+        return await interaction.response.send_message(f"No guild boss found on {day}.", ephemeral=True)
+    try:
+        db.attend(bot.db, found["id"], member.id, member.display_name, ign, logged_by=interaction.user.id)
+    except db.AlreadyAttended:
+        return await interaction.response.send_message("Member is already logged for that boss.", ephemeral=True)
+    await interaction.response.send_message(
+        f"Logged **{discord.utils.escape_markdown(ign)}** for the boss at {day} {found['boss_time'][11:16]} UTC.",
+        ephemeral=True)
+    await refresh_attendance(interaction.guild)
+
+
+@bot.tree.command(name="boss_remove", description="Staff: remove a member's attendance for a guild boss.")
+@app_commands.guild_only()
+@app_commands.describe(member="Staff can also paste the user ID of someone who left the server",
+                       date="Day as YYYY-MM-DD. Default: today (UTC).",
+                       boss="Boss time. Default: the day's latest boss.")
+@app_commands.autocomplete(boss=boss_autocomplete)
+async def boss_remove(interaction: discord.Interaction, member: discord.User, date: str | None = None,
+                      boss: str | None = None):
+    if not await require_staff(interaction):
+        return
+    try:
+        day = parse_day(date)
+    except ValueError:
+        return await interaction.response.send_message(BAD_DATE, ephemeral=True)
+    found = find_boss(interaction.guild_id, day, boss)
+    if not found:
+        return await interaction.response.send_message(f"No guild boss found on {day}.", ephemeral=True)
+    if not db.unattend(bot.db, found["id"], member.id):
+        return await interaction.response.send_message("Member is not logged for that boss.", ephemeral=True)
+    await interaction.response.send_message(
+        f"Removed {member.display_name} from the boss at {day} {found['boss_time'][11:16]} UTC.", ephemeral=True)
+    await refresh_attendance(interaction.guild)
+
+
 @setup.error
 async def on_setup_error(interaction: discord.Interaction, error):
     if isinstance(error, app_commands.MissingPermissions):
