@@ -596,6 +596,20 @@ async def tick():
 @tick.before_loop
 async def before_tick():
     await bot.wait_until_ready()
+    db_path = os.getenv("DB_PATH", "donations.db")
+    for guild in bot.guilds:
+        if db.get_guild(bot.db, guild.id):
+            continue
+        # usually a moved bot whose old database was uploaded under another name
+        text = (f"Evil Donations has no setup saved for **{guild.name}** in `{Path(db_path).name}`. "
+                f"If you moved the bot, stop it and upload the old database as exactly `{Path(db_path).name}`. "
+                f"Other .db files beside it: {', '.join(backup.other_db_files(db_path)) or 'none'}. "
+                "New server: run /setup.")
+        log.error(text)
+        try:  # the owner sees it in Discord: no staff channel is saved yet
+            await guild.owner.send(text)
+        except (discord.HTTPException, AttributeError):  # DMs closed, or owner not cached
+            pass
     for guild in bot.guilds:  # brings the board and button back after a /stop or crash
         try:  # an error here would stop the loop from ever starting
             await refresh_board(guild)

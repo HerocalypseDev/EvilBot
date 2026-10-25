@@ -1,7 +1,7 @@
 import sqlite3
 
 import db
-from backup import prune, run_backup
+from backup import other_db_files, prune, run_backup
 
 
 def make_db(tmp_path):
@@ -33,3 +33,9 @@ def test_prune_only_removes_old_backup_files(tmp_path):
     prune(tmp_path, "2026-10-22", keep_days=30)
     assert sorted(p.name for p in tmp_path.iterdir()) == [
         "donations-2026-10-10.db", "donations-old.db", "notes.txt"]
+
+
+def test_other_db_files(tmp_path):
+    for name in ("donations.db", "donations (1).db", "notes.txt"):
+        (tmp_path / name).write_text("")
+    assert other_db_files(tmp_path / "donations.db") == ["donations (1).db"]

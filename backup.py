@@ -42,3 +42,9 @@ def prune(folder, today, keep_days=30):
         m = _NAME.fullmatch(path.name)
         if m and date.fromisoformat(m.group(1)) < cutoff:
             path.unlink()
+
+
+def other_db_files(db_path):
+    """Names of other .db files beside the live one, e.g. an upload saved as 'donations (1).db'."""
+    live = Path(db_path).resolve()
+    return sorted(p.name for p in live.parent.glob("*.db") if p.resolve() != live)
