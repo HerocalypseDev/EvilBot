@@ -93,20 +93,47 @@ def top_streaks(conn, guild_id, tracked, today, count=5):
     return sorted((r for r in rows if r[1] >= 2), key=lambda r: (-r[1], r[0].lower()))[:count]
 
 
-def member_card(conn, guild_id, tracked, discord_id, today):
-    """Numbers for /me: today, streaks, this month and the member's rank this month among tracked members."""
+def bar(done, total, width=10):
+    """Text progress bar, e.g. '███████░░░'."""
+    filled = round(width * done / total) if total else 0
+    return "█" * filled + "░" * (width - filled)
+
+
+def next_badge(n):
+    """(days to go, badge name) for the next streak badge, or None after the last one."""
+    for goal in (7, 30):
+        if n < goal:
+            return goal - n, badge(goal)
+    return None
+
+
+def member_card(conn, guild_id, tracked, discord_id, now):
+    """Numbers for /me. Ranks are among tracked members (plus the member, if they lost the role)."""
+    today = now.date().isoformat()
     days = db.donation_days(conn, guild_id)
     mine = days.get(discord_id, set())
     month = today[:7]
-    counts = {i: sum(d.startswith(month) for d in days.get(i, set())) for i, _ in tracked}
-    counts.setdefault(discord_id, sum(d.startswith(month) for d in mine))
+    ids = {i for i, _ in tracked} | {discord_id}
+    month_counts = {i: sum(d.startswith(month) for d in days.get(i, set())) for i in ids}
+    all_counts = {i: len(days.get(i, set())) for i in ids}
+    last = next((r for r in db.history(conn, guild_id, discord_id) if r["status"] == "approved"), None)
+    boss_total, boss_counts = db.attend_counts(conn, guild_id, f"{month}-01", today, now.isoformat(timespec="seconds"))
+    d = date.fromisoformat(today)
     return {
         "today": today in mine,
         "streak": streak(mine, today),
         "best": best_streak(mine),
-        "month_days": counts[discord_id],
-        "rank": 1 + sum(c > counts[discord_id] for c in counts.values()),
-        "members": len(counts),
+        "next_badge": next_badge(streak(mine, today)),
+        "month_days": month_counts[discord_id],
+        "month_elapsed": d.day,
+        "month_rank": 1 + sum(c > month_counts[discord_id] for c in month_counts.values()),
+        "all_days": all_counts[discord_id],
+        "all_rank": 1 + sum(c > all_counts[discord_id] for c in all_counts.values()),
+        "members": len(ids),
+        "last_ts": int(datetime.fromisoformat(last["created_at"]).timestamp()) if last else None,
+        "last_14": [(d - timedelta(days=k)).isoformat() in mine for k in range(13, -1, -1)],  # oldest first
+        "boss_attended": boss_counts.get(discord_id, 0),
+        "boss_total": boss_total,
     }
 
 

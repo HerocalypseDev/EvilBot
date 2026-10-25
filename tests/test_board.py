@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 import db
-from board import (attend_board_data, best_streak, member_card, streak, top_streaks, attend_data_sections, attend_report, board_data, boss_lists, member_day,
+from board import (attend_board_data, bar, best_streak, member_card, streak, top_streaks, attend_data_sections, attend_report, board_data, boss_lists, member_day,
                    data_sections, day_lists, join_capped, link_lines, log_all, member_ids, missed_in_row, next_reset_ts, not_donated,
                    pack_lines, paginate, short)
 
@@ -222,5 +222,8 @@ def test_streaks_and_card():
     db.record(conn, G, 2, "two", "Bb", "2026-10-22")
     tracked = [(1, "one"), (2, "two")]
     assert top_streaks(conn, G, tracked, DAY) == [("Aa", 3)]
-    card = member_card(conn, G, tracked, 2, DAY)
-    assert (card["today"], card["streak"], card["month_days"], card["rank"], card["members"]) == (True, 1, 1, 2, 2)
+    card = member_card(conn, G, tracked, 2, datetime(2026, 10, 22, 12, tzinfo=timezone.utc))
+    assert (card["today"], card["streak"], card["month_days"], card["month_rank"], card["members"]) == (True, 1, 1, 2, 2)
+    assert (card["month_elapsed"], card["all_days"], card["next_badge"]) == (22, 1, (6, "7-day streak"))
+    assert card["last_14"] == [False] * 13 + [True]
+    assert bar(3, 6, width=4) == "██░░" and bar(0, 0) == "░" * 10

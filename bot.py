@@ -819,18 +819,45 @@ async def me(interaction: discord.Interaction):
         return await interaction.response.send_message(
             "You are not linked yet. Ask for a link with /link_request.", ephemeral=True)
     card = board.member_card(bot.db, interaction.guild_id, tracked_members(interaction.guild, row["member_role_id"]),
-                             interaction.user.id, db.today_utc())
-    embed = discord.Embed(title=discord.utils.escape_markdown(ign), description=interaction.user.mention)
-    embed.add_field(name="Today", value="Donated" if card["today"] else f"Not yet · resets <t:{board.next_reset_ts()}:R>")
+                             interaction.user.id, datetime.now(timezone.utc))
+    user = interaction.user
+    joined = f" · Member since <t:{int(user.joined_at.timestamp())}:D>" if getattr(user, "joined_at", None) else ""
+    embed = discord.Embed(title=f"Donation card · {discord.utils.escape_markdown(ign)}",
+                          description=f"{user.mention}{joined}")
+    embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
+    embed.set_thumbnail(url=user.display_avatar.url)
+
+    reset = f"<t:{board.next_reset_ts()}:R>"
+    embed.add_field(name="Today", value="**Donated**" if card["today"] else f"**Not yet**\nResets {reset}")
     badge = board.badge(card["streak"])
-    embed.add_field(name="Streak", value=f"{card['streak']} days" + (f" · {badge}" if badge else "")
-                    + f"\nBest: {card['best']} days")
+    embed.add_field(name="Current streak", value=f"**{card['streak']}** days" + (f"\n{badge}" if badge else ""))
+    embed.add_field(name="Best streak", value=f"**{card['best']}** days")
+
+    month_pct = round(100 * card["month_days"] / card["month_elapsed"])
     embed.add_field(name="This month (UTC)",
-                    value=f"{card['month_days']} days · {card['month_days'] * DONATION_AMOUNT:,} coins")
-    embed.add_field(name="Rank this month", value=f"#{card['rank']} of {card['members']}")
-    if interaction.user.display_avatar:
-        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
-    await interaction.response.send_message(embed=brand(embed, interaction.guild), ephemeral=True)
+                    value=f"**{card['month_days']}** of {card['month_elapsed']} days\n"
+                          f"`{board.bar(card['month_days'], card['month_elapsed'])}` {month_pct}%")
+    embed.add_field(name="Coins this month", value=f"**{card['month_days'] * DONATION_AMOUNT:,}**")
+    embed.add_field(name="Rank this month", value=f"**#{card['month_rank']}** of {card['members']}")
+
+    embed.add_field(name="All time", value=f"**{card['all_days']}** days")
+    embed.add_field(name="Coins all time", value=f"**{card['all_days'] * DONATION_AMOUNT:,}**")
+    embed.add_field(name="Rank all time", value=f"**#{card['all_rank']}** of {card['members']}")
+
+    strip = "".join("█" if done else "░" for done in card["last_14"])
+    embed.add_field(name="Last 14 days", value=f"`{strip}`\n14 days ago, left · today, right", inline=False)
+
+    if card["boss_total"]:
+        embed.add_field(name="Guild boss this month",
+                        value=f"**{card['boss_attended']}** of {card['boss_total']} attended\n"
+                              f"`{board.bar(card['boss_attended'], card['boss_total'])}` "
+                              f"{round(100 * card['boss_attended'] / card['boss_total'])}%")
+    embed.add_field(name="Last donation", value=f"<t:{card['last_ts']}:R>" if card["last_ts"] else "None yet")
+    if card["next_badge"]:
+        to_go, name = card["next_badge"]
+        embed.add_field(name="Next badge", value=f"{name} in **{to_go}** day(s)")
+    await interaction.response.send_message(embed=brand(embed, footer="Days and ranks use the UTC day"),
+                                            ephemeral=True)
 
 
 @bot.tree.command(description="Remove a link. Staff can unlink other members.")
