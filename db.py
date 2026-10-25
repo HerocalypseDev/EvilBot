@@ -60,6 +60,23 @@ CREATE TABLE IF NOT EXISTS reminders (
     sent_at        TEXT NOT NULL,
     PRIMARY KEY (guild_id, day_utc, minutes_before)
 );
+CREATE TABLE IF NOT EXISTS bosses (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id   INTEGER NOT NULL,
+    day_utc    TEXT NOT NULL,
+    boss_time  TEXT NOT NULL,
+    opened_at  TEXT,
+    UNIQUE (guild_id, boss_time)
+);
+CREATE TABLE IF NOT EXISTS attendance (
+    boss_id      INTEGER NOT NULL REFERENCES bosses (id),
+    discord_id   INTEGER NOT NULL,
+    discord_name TEXT NOT NULL,
+    ign          TEXT NOT NULL,
+    logged_by    INTEGER,
+    created_at   TEXT NOT NULL,
+    PRIMARY KEY (boss_id, discord_id)
+);
 """
 
 
@@ -76,6 +93,10 @@ class IgnTaken(Exception):
 
 
 class NotInRoster(Exception):
+    pass
+
+
+class AlreadyAttended(Exception):
     pass
 
 
@@ -97,7 +118,9 @@ def connect(path):
     conn.executescript(SCHEMA)
     have = {r["name"] for r in conn.execute("PRAGMA table_info(guilds)")}
     for column, kind in (("boss_channel_id", "INTEGER"), ("data_channel_id", "INTEGER"),
-                         ("data_message_ids", "TEXT")):  # columns added after the first release
+                         ("data_message_ids", "TEXT"), ("attend_channel_id", "INTEGER"),
+                         ("attend_message_id", "INTEGER"), ("attend_data_channel_id", "INTEGER"),
+                         ("attend_data_message_ids", "TEXT")):  # columns added after the first release
         if column not in have:
             conn.execute(f"ALTER TABLE guilds ADD COLUMN {column} {kind}")
     return conn
@@ -107,7 +130,8 @@ def connect(path):
 
 GUILD_FIELDS = {"panel_channel_id", "status_message_id", "officer_role_id",
                 "member_role_id", "board_day", "boss_channel_id",
-                "data_channel_id", "data_message_ids"}
+                "data_channel_id", "data_message_ids", "attend_channel_id",
+                "attend_message_id", "attend_data_channel_id", "attend_data_message_ids"}
 
 
 def save_guild(conn, guild_id, **fields):
@@ -146,6 +170,59 @@ def resolve_boss_poll(conn, guild_id, cycle_start, resolved_time):
         return conn.execute(
             "UPDATE boss_polls SET resolved_time = ? WHERE guild_id = ? AND cycle_start = ? "
             "AND resolved_time IS NULL", (resolved_time, guild_id, cycle_start)).rowcount == 1
+
+
+# --- boss attendance: one boss row per ping, at the winning time ---
+
+def add_boss(conn, guild_id, boss_time):
+    """boss_time = ISO 8601 UTC. Day = its UTC date. A second add for the same time is ignored."""
+    with conn:
+        conn.execute("INSERT OR IGNORE INTO bosses (guild_id, day_utc, boss_time) VALUES (?, ?, ?)",
+                     (guild_id, boss_time[:10], boss_time))
+
+
+def latest_boss(conn, guild_id):
+    return conn.execute("SELECT * FROM bosses WHERE guild_id = ? ORDER BY boss_time DESC LIMIT 1",
+                        (guild_id,)).fetchone()
+
+
+def bosses_for_day(conn, guild_id, day):
+    return conn.execute("SELECT * FROM bosses WHERE guild_id = ? AND day_utc = ? ORDER BY boss_time",
+                        (guild_id, day)).fetchall()
+
+
+def get_boss(conn, guild_id, boss_time):
+    return conn.execute("SELECT * FROM bosses WHERE guild_id = ? AND boss_time = ?",
+                        (guild_id, boss_time)).fetchone()
+
+
+def claim_boss_open(conn, boss_id):
+    """Claim the 'logging open' ping. True only the first time, so a restart never double-pings."""
+    with conn:
+        return conn.execute("UPDATE bosses SET opened_at = ? WHERE id = ? AND opened_at IS NULL",
+                            (now_iso(), boss_id)).rowcount == 1
+
+
+def attend(conn, boss_id, discord_id, discord_name, ign, logged_by=None):
+    """Raises AlreadyAttended if the member is already logged for that boss."""
+    try:
+        with conn:
+            conn.execute("INSERT INTO attendance VALUES (?, ?, ?, ?, ?, ?)",
+                         (boss_id, discord_id, discord_name, ign, logged_by, now_iso()))
+    except sqlite3.IntegrityError:
+        raise AlreadyAttended from None
+
+
+def unattend(conn, boss_id, discord_id):
+    with conn:
+        return conn.execute("DELETE FROM attendance WHERE boss_id = ? AND discord_id = ?",
+                            (boss_id, discord_id)).rowcount == 1
+
+
+def attendance_for_boss(conn, boss_id):
+    """Newest first."""
+    return conn.execute("SELECT * FROM attendance WHERE boss_id = ? ORDER BY created_at DESC, rowid DESC",
+                        (boss_id,)).fetchall()
 
 
 # --- reminders ---

@@ -113,3 +113,20 @@ def test_log_marks_staff(conn):
     row = conn.execute("SELECT * FROM submissions WHERE id = ?", (sid,)).fetchone()
     assert row["logged_by"] == 9
     assert db.get_approved(conn, G, A, DAY)["id"] == sid
+
+
+def test_boss_attendance(conn):
+    t = "2026-10-22T02:00:00+00:00"
+    db.add_boss(conn, G, t)
+    db.add_boss(conn, G, t)  # second ping for the same time is ignored
+    boss = db.latest_boss(conn, G)
+    assert boss["day_utc"] == DAY and [b["id"] for b in db.bosses_for_day(conn, G, DAY)] == [boss["id"]]
+    assert db.get_boss(conn, G, t)["id"] == boss["id"] and db.get_boss(conn, 2, t) is None
+    assert db.claim_boss_open(conn, boss["id"]) and not db.claim_boss_open(conn, boss["id"])
+    db.attend(conn, boss["id"], A, "a", "Ann")
+    with pytest.raises(db.AlreadyAttended):
+        db.attend(conn, boss["id"], A, "a", "Ann", logged_by=9)
+    db.attend(conn, boss["id"], B, "b", "Bob", logged_by=9)
+    assert [r["discord_id"] for r in db.attendance_for_boss(conn, boss["id"])] == [B, A]  # newest first
+    assert db.unattend(conn, boss["id"], A) and not db.unattend(conn, boss["id"], A)
+    db.attend(conn, boss["id"], A, "a", "Ann")  # can log again after a staff removal
