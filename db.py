@@ -233,6 +233,13 @@ def attend_counts(conn, guild_id, first_day, last_day, now):
     return total, counts
 
 
+def recent_bosses(conn, guild_id, now, count):
+    """Ids of the newest `count` bosses that started by `now` (ISO 8601 UTC)."""
+    return [r["id"] for r in conn.execute(
+        "SELECT id FROM bosses WHERE guild_id = ? AND boss_time <= ? ORDER BY boss_time DESC LIMIT ?",
+        (guild_id, now, count))]
+
+
 def attendance_for_boss(conn, boss_id):
     """Newest first."""
     return conn.execute("SELECT * FROM attendance WHERE boss_id = ? ORDER BY created_at DESC, rowid DESC",

@@ -153,3 +153,22 @@ def member_day(conn, guild_id, discord_id, day, now):
     return [(int(datetime.fromisoformat(b["boss_time"]).timestamp()),
              any(r["discord_id"] == discord_id for r in db.attendance_for_boss(conn, b["id"])))
             for b in db.bosses_for_day(conn, guild_id, day) if b["boss_time"] <= now_text]
+
+
+def attend_report(conn, guild_id, tracked, first_day, last_day, now):
+    """Linked members' attendance from first_day to last_day. Returns (boss count,
+    [(in-game name, bosses attended)]), fewest first, then by name."""
+    igns = db.get_igns(conn, guild_id)
+    total, counts = db.attend_counts(conn, guild_id, first_day, last_day, now.isoformat(timespec="seconds"))
+    rows = [(igns[i], counts.get(i, 0)) for i, _ in tracked if i in igns]
+    return total, sorted(rows, key=lambda r: (r[1], r[0].lower()))
+
+
+def missed_in_row(conn, guild_id, tracked, now, count):
+    """Linked members who attended none of the newest `count` started bosses.
+    Returns (bosses checked, in-game names sorted). Fewer bosses than `count` may exist."""
+    ids = db.recent_bosses(conn, guild_id, now.isoformat(timespec="seconds"), count)
+    seen = {r["discord_id"] for b in ids for r in db.attendance_for_boss(conn, b)}
+    igns = db.get_igns(conn, guild_id)
+    names = [igns[i] for i, _ in tracked if i in igns and i not in seen] if ids else []
+    return len(ids), sorted(names, key=str.lower)

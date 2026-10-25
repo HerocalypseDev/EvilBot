@@ -1,7 +1,9 @@
 from datetime import datetime, timezone
 
 import db
-from board import attend_board_data, attend_data_sections, board_data, boss_lists, member_day, data_sections, day_lists, join_capped, short, next_reset_ts, not_donated, paginate
+from board import (attend_board_data, attend_data_sections, attend_report, board_data, boss_lists, member_day,
+                   data_sections, day_lists, join_capped, missed_in_row, next_reset_ts, not_donated, paginate,
+                   short)
 
 G, DAY, YDAY = 1, "2026-10-22", "2026-10-21"
 
@@ -162,3 +164,22 @@ def test_boss_lists_and_member_day():
     now = datetime(2026, 10, 22, 9, tzinfo=timezone.utc)  # 14:00 not started yet
     assert member_day(conn, G, 1, DAY, now) == [(two, True), (two + 6 * 3600, False)]
     assert member_day(conn, G, 1, YDAY, now) == []
+
+
+def test_attend_report_and_missed_in_row():
+    conn = conn_with((1, "Ann"), (2, "bob"), (3, "Cy"))
+    tracked = [(1, "a"), (2, "b"), (3, "c"), (4, "d")]  # 4 not linked: left out
+    now = datetime(2026, 10, 22, 9, tzinfo=timezone.utc)
+    assert missed_in_row(conn, G, tracked, now, 4) == (0, [])  # no bosses yet: nobody flagged
+    ids = []
+    for t in ("2026-10-21T20:00:00+00:00", "2026-10-22T02:00:00+00:00", "2026-10-22T08:00:00+00:00",
+              "2026-10-22T14:00:00+00:00"):  # the last one has not started
+        db.add_boss(conn, G, t)
+        ids.append(db.get_boss(conn, G, t)["id"])
+    db.attend(conn, ids[0], 1, "a", "Ann")
+    db.attend(conn, ids[1], 1, "a", "Ann")
+    db.attend(conn, ids[0], 2, "b", "bob")
+    assert attend_report(conn, G, tracked, YDAY, DAY, now) == (3, [("Cy", 0), ("bob", 1), ("Ann", 2)])
+    assert attend_report(conn, G, tracked, DAY, DAY, now) == (2, [("bob", 0), ("Cy", 0), ("Ann", 1)])
+    assert missed_in_row(conn, G, tracked, now, 2) == (2, ["bob", "Cy"])
+    assert missed_in_row(conn, G, tracked, now, 10) == (3, ["Cy"])

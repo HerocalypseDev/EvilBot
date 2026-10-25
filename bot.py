@@ -5,7 +5,7 @@ import logging
 import logging.handlers
 import os
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import discord
 from discord import app_commands
@@ -1073,6 +1073,63 @@ async def boss_remove(interaction: discord.Interaction, member: discord.User, da
     await interaction.response.send_message(
         f"Removed {member.display_name} from the boss at {day} {found['boss_time'][11:16]} UTC.", ephemeral=True)
     await refresh_attendance(interaction.guild)
+
+
+async def send_text(interaction, header, lines, filename):
+    """Private reply. Sent as a file when too long for a message, like /roster list."""
+    text = "\n".join(lines)
+    if len(text) + len(header) > 1800:
+        file = discord.File(io.BytesIO(text.encode("utf-8")), filename)
+        return await interaction.response.send_message(header, file=file, ephemeral=True)
+    await interaction.response.send_message(f"{header}\n{text}", ephemeral=True)
+
+
+@bot.tree.command(name="boss_report", description="Staff: guild boss attendance per member over some days.")
+@app_commands.guild_only()
+@app_commands.rename(first="from", last="to")
+@app_commands.describe(first="First day as YYYY-MM-DD. Default: 6 days before 'to'.",
+                       last="Last day as YYYY-MM-DD. Default: today (UTC).")
+async def boss_report(interaction: discord.Interaction, first: str | None = None, last: str | None = None):
+    if not await require_staff(interaction):
+        return
+    try:
+        last_day = datetime.strptime(parse_day(last), "%Y-%m-%d").date()
+        first_day = datetime.strptime(first, "%Y-%m-%d").date() if first else last_day - timedelta(days=6)
+    except ValueError:
+        return await interaction.response.send_message(BAD_DATE, ephemeral=True)
+    if not 0 <= (last_day - first_day).days <= 30:
+        return await interaction.response.send_message(
+            "'from' must be on or before 'to', and at most 31 days in all.", ephemeral=True)
+    row = db.get_guild(bot.db, interaction.guild_id)
+    if not row:
+        return await interaction.response.send_message("Run /setup first.", ephemeral=True)
+    total, rows = board.attend_report(bot.db, interaction.guild_id,
+                                      tracked_members(interaction.guild, row["member_role_id"]),
+                                      first_day.isoformat(), last_day.isoformat(), datetime.now(timezone.utc))
+    header = f"Guild bosses {first_day} to {last_day} (UTC): {total} in all. Fewest first."
+    await send_text(interaction, header, [f"{discord.utils.escape_markdown(ign)} · {n}/{total}" for ign, n in rows]
+                    or ["No linked members."], "boss_report.txt")
+
+
+@bot.tree.command(name="boss_missed", description="Staff: members who missed the last guild bosses in a row.")
+@app_commands.guild_only()
+@app_commands.describe(count="How many of the latest bosses. Default: 4 (about one day).")
+async def boss_missed(interaction: discord.Interaction, count: app_commands.Range[int, 1, 50] = 4):
+    if not await require_staff(interaction):
+        return
+    row = db.get_guild(bot.db, interaction.guild_id)
+    if not row:
+        return await interaction.response.send_message("Run /setup first.", ephemeral=True)
+    checked, names = board.missed_in_row(bot.db, interaction.guild_id,
+                                         tracked_members(interaction.guild, row["member_role_id"]),
+                                         datetime.now(timezone.utc), count)
+    if not checked:
+        return await interaction.response.send_message("No guild bosses yet.", ephemeral=True)
+    header = f"Missed all of the last {checked} guild bosses: {len(names)} member(s)."
+    if checked < count:
+        header += f" Only {checked} bosses so far."
+    await send_text(interaction, header, [discord.utils.escape_markdown(n) for n in names] or ["Nobody."],
+                    "boss_missed.txt")
 
 
 @setup.error
