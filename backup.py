@@ -48,3 +48,10 @@ def other_db_files(db_path):
     """Names of other .db files beside the live one, e.g. an upload saved as 'donations (1).db'."""
     live = Path(db_path).resolve()
     return sorted(p.name for p in live.parent.glob("*.db") if p.resolve() != live)
+
+
+def latest_backup(folder):
+    """Newest donations-YYYY-MM-DD.db name in folder, or None."""
+    folder = Path(folder)
+    names = sorted(p.name for p in folder.iterdir() if _NAME.fullmatch(p.name)) if folder.is_dir() else []
+    return names[-1] if names else None

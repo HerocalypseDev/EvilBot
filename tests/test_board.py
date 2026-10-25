@@ -1,7 +1,7 @@
 from datetime import date, datetime, timedelta, timezone
 
 import db
-from board import (attend_board_data, bar, best_streak, member_card, streak, top_streaks, attend_data_sections, attend_report, board_data, boss_lists, member_day,
+from board import (attend_board_data, bar, dashboard_stats, best_streak, member_card, streak, top_streaks, attend_data_sections, attend_report, board_data, boss_lists, member_day,
                    data_sections, day_lists, join_capped, link_lines, log_all, member_ids, missed_in_row, next_reset_ts, not_donated,
                    monthly_csv, monthly_report, pack_lines, paginate, short, weekly_leaderboard)
 
@@ -260,3 +260,18 @@ def test_monthly_report_and_boss_streak():
     assert (report["boss_total"], report["days_in_month"]) == (3, 31)
     assert report["streaks"] == [("Bb", 1), ("Aa", 0)]
     assert monthly_csv(report, 50_000).splitlines()[1] == "Aa,one,1,50000,2,3"
+
+
+def test_dashboard_stats():
+    conn = conn_with((1, "Aa"), (2, "Bb"), (3, "Cc"))  # 3 is linked but lost the role
+    for d in ("2026-10-19", "2026-10-20", "2026-10-21"):
+        db.record(conn, G, 1, "one", "Aa", d)
+    db.record(conn, G, 2, "two", "Bb", DAY)
+    tracked = [(1, "one"), (2, "two"), (4, "Dee")]  # 4 has the role but no link
+    stats = dashboard_stats(conn, G, tracked, datetime(2026, 10, 22, 12, tzinfo=timezone.utc))  # a Thursday
+    assert stats["week"][-4:] == [(date(2026, 10, 19), 1), (date(2026, 10, 20), 1), (date(2026, 10, 21), 1),
+                                  (date(2026, 10, 22), 1)]
+    assert stats["week_rate"] == (4, 8)  # Monday to Thursday, 2 linked members
+    assert stats["month_rate"] == (4, 44)
+    assert stats["at_risk"] == [("Aa", 3)]
+    assert (stats["not_linked"], stats["stale_links"]) == (["Dee"], ["Cc"])

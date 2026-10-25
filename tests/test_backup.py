@@ -1,7 +1,7 @@
 import sqlite3
 
 import db
-from backup import other_db_files, prune, run_backup
+from backup import latest_backup, other_db_files, prune, run_backup
 
 
 def make_db(tmp_path):
@@ -39,3 +39,10 @@ def test_other_db_files(tmp_path):
     for name in ("donations.db", "donations (1).db", "notes.txt"):
         (tmp_path / name).write_text("")
     assert other_db_files(tmp_path / "donations.db") == ["donations (1).db"]
+
+
+def test_latest_backup(tmp_path):
+    assert latest_backup(tmp_path / "missing") is None
+    for name in ("donations-2026-10-21.db", "donations-2026-10-22.db", "donations.db"):
+        (tmp_path / name).write_text("")
+    assert latest_backup(tmp_path) == "donations-2026-10-22.db"

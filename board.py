@@ -200,6 +200,39 @@ def monthly_csv(report, amount):
     return out.getvalue()
 
 
+def dashboard_stats(conn, guild_id, tracked, now):
+    """Extra numbers for /dashboard. tracked = [(discord_id, display_name)]; rates count linked members.
+    week: [(day, donated)] for the last 7 UTC days, oldest first.
+    week_rate / month_rate: (member-days donated, member-days possible) since Monday / the 1st, today included.
+    at_risk: [(ign, streak)] streaks of 3+ days not logged today, longest first.
+    bosses_today: [(unix time, attended)] for bosses started today.
+    not_linked: role members with no link. stale_links: igns linked to someone without the role."""
+    today = now.date()
+    igns, days = db.get_igns(conn, guild_id), db.donation_days(conn, guild_id)
+    linked = [i for i, _ in tracked if i in igns]
+    tracked_ids = {i for i, _ in tracked}
+
+    def rate(first):
+        span = {(first + timedelta(days=k)).isoformat() for k in range((today - first).days + 1)}
+        return sum(len(days.get(i, set()) & span) for i in linked), len(linked) * len(span)
+
+    now_text = now.isoformat(timespec="seconds")
+    return {
+        "week": [(today - timedelta(days=k), sum((today - timedelta(days=k)).isoformat() in days.get(i, set())
+                                                  for i in linked)) for k in range(6, -1, -1)],
+        "week_rate": rate(today - timedelta(days=today.weekday())),
+        "month_rate": rate(today.replace(day=1)),
+        "at_risk": sorted(((igns[i], streak(days.get(i, set()), today.isoformat())) for i in linked
+                           if today.isoformat() not in days.get(i, set())
+                           and streak(days.get(i, set()), today.isoformat()) >= 3),
+                          key=lambda r: (-r[1], r[0].lower())),
+        "bosses_today": [(int(datetime.fromisoformat(b["boss_time"]).timestamp()), len(db.attendance_for_boss(conn, b["id"])))
+                         for b in db.bosses_for_day(conn, guild_id, today.isoformat()) if b["boss_time"] <= now_text],
+        "not_linked": sorted((name for i, name in tracked if i not in igns), key=str.lower),
+        "stale_links": sorted((ign for i, ign in igns.items() if i not in tracked_ids), key=str.lower),
+    }
+
+
 def not_donated(conn, guild_id, tracked, day):
     """tracked = [(discord_id, display_name)]. Returns [(discord_id, board_name)] who have no
     approved donation for `day`. Board name is the in-game name, or 'Name (not linked)'."""

@@ -23,6 +23,7 @@ from config import (BACKUP_HOUR_UTC, DATA_PAGE, DONATION_AMOUNT, IGN_MAX, IGN_MI
                     RECENT_DONORS, REMINDER_MINUTES, VERSION)
 
 log = logging.getLogger("evil")
+STARTED = datetime.now(timezone.utc)
 
 intents = discord.Intents.default()
 intents.members = True  # privileged: needed for role checks and the not-donated list
@@ -1799,6 +1800,36 @@ async def dashboard(interaction: discord.Interaction):
     checked, missed = board.missed_in_row(bot.db, guild.id, tracked, now, 4)
     if checked:
         embed.add_field(name=f"Missed the last {checked} bosses", value=f"**{len(missed)}** members")
+
+    stats, esc = board.dashboard_stats(bot.db, guild.id, tracked, now), discord.utils.escape_markdown
+    top = max([n for _, n in stats["week"]] + [1])
+    embed.add_field(name="Last 7 days (donated)", inline=False, value="```\n" + "\n".join(
+        f"{d:%a %d}  {board.bar(n, top)}  {n}" for d, n in stats["week"]) + "\n```")
+    for name, (done, possible) in (("This week", stats["week_rate"]), ("This month", stats["month_rate"])):
+        embed.add_field(name=f"{name} (since {'Monday' if name == 'This week' else 'the 1st'})",
+                        value=f"**{round(100 * done / possible) if possible else 0}%** · {done}/{possible} member-days\n"
+                              f"{done * DONATION_AMOUNT:,} coins")
+    if stats["bosses_today"]:
+        embed.add_field(name="Guild bosses today", value="\n".join(
+            f"<t:{ts}:t> · {n}/{sum(i in linked for i, _ in tracked)} attended" for ts, n in stats["bosses_today"]))
+    embed.add_field(name=f"Streaks at risk ({len(stats['at_risk'])})", inline=False,
+                    value=board.join_capped([f"{esc(ign)} ({n} days)" for ign, n in stats["at_risk"]])
+                    or "Nobody: every streak of 3+ days is logged today.")
+    problems = []
+    if stats["not_linked"]:
+        problems.append(f"**Not linked ({len(stats['not_linked'])}):** "
+                        + board.join_capped([esc(n) for n in stats["not_linked"]], 300))
+    if stats["stale_links"]:
+        problems.append(f"**Linked but no {MEMBER_ROLE_NAME} role ({len(stats['stale_links'])}):** "
+                        + board.join_capped([esc(n) for n in stats["stale_links"]], 300))
+    embed.add_field(name="Roster problems", inline=False, value="\n".join(problems) or "None.")
+
+    db_path = Path(os.getenv("DB_PATH", "donations.db"))
+    size = f"{db_path.stat().st_size / 1024:,.0f} KB" if db_path.is_file() else "unknown"
+    last_backup = backup.latest_backup(os.getenv("BACKUP_DIR", "backups"))
+    embed.add_field(name="Bot", inline=False,
+                    value=f"Version {VERSION} · up since <t:{int(STARTED.timestamp())}:R>\n"
+                          f"Database {size} · last daily backup: {last_backup[11:21] if last_backup else 'none yet'}")
     channels = [("Panel", row["panel_channel_id"]), ("Boss polls", row["boss_channel_id"]),
              ("Attendance", row["attend_channel_id"]), ("Data", row["data_channel_id"]),
              ("Attendance data", row["attend_data_channel_id"]), ("Staff", row["staff_channel_id"]),
