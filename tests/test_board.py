@@ -61,7 +61,7 @@ def test_board_recent_order_and_totals():
     assert [ign for _, ign, _ in data["recent"]] == ["P11", "P10", "P9", "P8", "P7", "P6", "P5", "P4", "P3", "P2"]
     assert data["waiting"] == []
     assert all(name == "n" and isinstance(ts, int) for name, _, ts in data["recent"])
-    assert (data["yesterday_count"], data["yesterday_coins"]) == (2, 100_000)
+    assert data["yesterday_count"] == 2
 
 
 def test_voided_donation_leaves_board():
@@ -259,7 +259,7 @@ def test_monthly_report_and_boss_streak():
     assert report["rows"] == [("Aa", "one", 1, 2), ("Bb", "two", 0, 1)]
     assert (report["boss_total"], report["days_in_month"]) == (3, 31)
     assert report["streaks"] == [("Bb", 1), ("Aa", 0)]
-    assert monthly_csv(report, 50_000).splitlines()[1] == "Aa,one,1,50000,2,3"
+    assert monthly_csv(report).splitlines()[1] == "Aa,one,1,2,3"
 
 
 def test_dashboard_stats():

@@ -190,13 +190,12 @@ def monthly_report(conn, guild_id, tracked, month, now):
     }
 
 
-def monthly_csv(report, amount):
+def monthly_csv(report):
     out = io.StringIO()
     writer = csv.writer(out)
-    writer.writerow(("in_game_name", "discord_name", "donation_days", "coins", "bosses_attended", "bosses_total"))
+    writer.writerow(("in_game_name", "discord_name", "donation_days", "bosses_attended", "bosses_total"))
     for ign, name, donated, attended in report["rows"]:
-        writer.writerow([db.safe_cell(ign), db.safe_cell(name), donated, donated * amount, attended,
-                         report["boss_total"]])
+        writer.writerow([db.safe_cell(ign), db.safe_cell(name), donated, attended, report["boss_total"]])
     return out.getvalue()
 
 
@@ -306,7 +305,7 @@ def day_lists(conn, guild_id, tracked, day):
 
 def board_data(conn, guild_id, tracked, today, yesterday, now=None):
     today_rows = db.approved_for_day(conn, guild_id, today)
-    y_count, y_coins = db.day_totals(conn, guild_id, yesterday)
+    y_count = db.day_totals(conn, guild_id, yesterday)[0]
     return {
         "today_count": len(today_rows),
         "reset_ts": next_reset_ts(now),
@@ -314,7 +313,6 @@ def board_data(conn, guild_id, tracked, today, yesterday, now=None):
                    for r in today_rows[:RECENT_DONORS]],
         "waiting": [name for _, name in not_donated(conn, guild_id, tracked, today)],
         "yesterday_count": y_count,
-        "yesterday_coins": y_coins,
         "streaks": top_streaks(conn, guild_id, tracked, today),
     }
 

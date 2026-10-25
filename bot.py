@@ -19,7 +19,7 @@ import board
 import boss
 import db
 import reminders
-from config import (BACKUP_HOUR_UTC, DATA_PAGE, DONATION_AMOUNT, IGN_MAX, IGN_MIN, MEMBER_ROLE_NAME,
+from config import (BACKUP_HOUR_UTC, DATA_PAGE, IGN_MAX, IGN_MIN, MEMBER_ROLE_NAME,
                     RECENT_DONORS, REMINDER_MINUTES, VERSION)
 
 log = logging.getLogger("evil")
@@ -76,7 +76,7 @@ def board_embed(data, guild):
                                             sep="\n")  # one name per line
                     or "Everyone has donated.", inline=False)
     embed.add_field(name="Yesterday (UTC)",
-                    value=f"Donated: {data['yesterday_count']} · Coins: {data['yesterday_coins']:,}",
+                    value=f"Donated: {data['yesterday_count']}",
                     inline=False)
     if data["streaks"]:
         embed.add_field(name="Top streaks (days in a row)",
@@ -296,7 +296,7 @@ class PanelView(discord.ui.View):
             return await interaction.response.send_message(
                 "You already logged a donation today.", ephemeral=True)
         await interaction.response.send_message(
-            f"Logged {DONATION_AMOUNT:,} for today.", ephemeral=True)
+            "Logged your donation for today.", ephemeral=True)
         await refresh_board(interaction.guild)
 
 
@@ -748,15 +748,14 @@ async def post_monthly(guild, row, now):
     possible = len(rows) * report["days_in_month"]
     embed = discord.Embed(title=f"Monthly report · {title_month}", description=f"{len(rows)} linked members (UTC days)")
     embed.add_field(name="Donations", value=f"**{donated}** of {possible} member-days"
-                    + (f" ({round(100 * donated / possible)}%)" if possible else "")
-                    + f"\n**{donated * DONATION_AMOUNT:,}** coins")
+                    + (f" ({round(100 * donated / possible)}%)" if possible else ""))
     attended = sum(r[3] for r in rows)
     embed.add_field(name="Guild bosses", value=f"**{total}** bosses\n**{attended}** attendances"
                     + (f" ({round(100 * attended / (total * len(rows)))}%)" if total and rows else ""))
     lowest = sorted(rows, key=lambda r: (r[2], r[0].lower()))[:5]
     embed.add_field(name="Fewest donation days", inline=False,
                     value="\n".join(f"{esc(ign)} · {d} days" for ign, _, d, _ in lowest) or "No linked members.")
-    csv_data = board.monthly_csv(report, DONATION_AMOUNT).encode("utf-8-sig")  # BOM: Excel reads UTF-8
+    csv_data = board.monthly_csv(report).encode("utf-8-sig")  # BOM: Excel reads UTF-8
     await staff_post(guild, embed=brand(embed, guild, "Full numbers in the attached file"),
                      file=discord.File(io.BytesIO(csv_data), f"report-{month}.csv"))
 
@@ -1033,11 +1032,9 @@ async def me(interaction: discord.Interaction):
     embed.add_field(name="This month (UTC)",
                     value=f"**{card['month_days']}** of {card['month_elapsed']} days\n"
                           f"`{board.bar(card['month_days'], card['month_elapsed'])}` {month_pct}%")
-    embed.add_field(name="Coins this month", value=f"**{card['month_days'] * DONATION_AMOUNT:,}**")
     embed.add_field(name="Rank this month", value=f"**#{card['month_rank']}** of {card['members']}")
 
     embed.add_field(name="All time", value=f"**{card['all_days']}** days")
-    embed.add_field(name="Coins all time", value=f"**{card['all_days'] * DONATION_AMOUNT:,}**")
     embed.add_field(name="Rank all time", value=f"**#{card['all_rank']}** of {card['members']}")
 
     strip = "".join("█" if done else "░" for done in card["last_14"])
@@ -1223,7 +1220,7 @@ async def log_donation(interaction: discord.Interaction, member: discord.Member,
         return await interaction.response.send_message(
             "Member already has an approved donation that day.", ephemeral=True)
     await interaction.response.send_message(
-        f"Logged {DONATION_AMOUNT:,} for **{ign}** on {date}.", ephemeral=True)
+        f"Logged a donation for **{ign}** on {date}.", ephemeral=True)
     await audit(interaction, f"logged a donation for {member.mention} on {date}.")
     await refresh_board(interaction.guild)
 
@@ -1254,7 +1251,7 @@ async def log_many(interaction: discord.Interaction, members: str, day: app_comm
         except db.AlreadyDonated:
             already.append(ign)
     esc = discord.utils.escape_markdown
-    lines = [f"Logged {DONATION_AMOUNT:,} for {len(logged)} member(s) on {date}."]
+    lines = [f"Logged donations for {len(logged)} member(s) on {date}."]
     if logged:
         lines.append(f"Logged: {board.join_capped([esc(n) for n in logged], 500)}")
     if already:
@@ -1288,7 +1285,7 @@ async def log_all(interaction: discord.Interaction, skip: discord.Member):
     async def run(button_interaction):
         logged, _ = board.log_all(bot.db, interaction.guild_id, tracked, date, skip.id, interaction.user.id)
         await button_interaction.response.edit_message(
-            content=f"Logged {DONATION_AMOUNT:,} for {len(logged)} member(s) on {date}. Skipped "
+            content=f"Logged donations for {len(logged)} member(s) on {date}. Skipped "
                     f"{skip.display_name}.{not_linked}\nPress Undo within 15 minutes to take them all back.",
             view=UndoLogAllView([i for i, _ in logged]))
         await audit(interaction, f"logged donations for {len(logged)} member(s) on {date} with /log_all, "
@@ -1296,7 +1293,7 @@ async def log_all(interaction: discord.Interaction, skip: discord.Member):
         await refresh_board(interaction.guild)
 
     await interaction.response.send_message(
-        f"Log {DONATION_AMOUNT:,} for **{len(to_log)}** member(s) on {date}, skipping {skip.display_name}?"
+        f"Log a donation for **{len(to_log)}** member(s) on {date}, skipping {skip.display_name}?"
         f"{not_linked}", view=ConfirmView(run), ephemeral=True)
 
 
@@ -1805,7 +1802,7 @@ async def dashboard(interaction: discord.Interaction):
     embed.add_field(name="Donated today", value=f"**{data['today_count']}** of {len(tracked)}\n"
                     f"`{board.bar(data['today_count'], len(tracked))}`")
     embed.add_field(name="Not donated", value=f"**{len(data['waiting'])}**")
-    embed.add_field(name="Yesterday", value=f"**{data['yesterday_count']}** donated\n{data['yesterday_coins']:,} coins")
+    embed.add_field(name="Yesterday", value=f"**{data['yesterday_count']}** donated")
     embed.add_field(name="Linked", value=f"**{sum(i in linked for i, _ in tracked)}** of {len(tracked)} members\n"
                     f"{len(db.roster_names(bot.db, guild.id, only_free=True))} roster names free")
     latest = db.started_boss(bot.db, guild.id, now.isoformat(timespec="seconds"))
@@ -1827,8 +1824,7 @@ async def dashboard(interaction: discord.Interaction):
         f"{d:%a %d}  {board.bar(n, top)}  {n}" for d, n in stats["week"]) + "\n```")
     for name, (done, possible) in (("This week", stats["week_rate"]), ("This month", stats["month_rate"])):
         embed.add_field(name=f"{name} (since {'Monday' if name == 'This week' else 'the 1st'})",
-                        value=f"**{round(100 * done / possible) if possible else 0}%** · {done}/{possible} member-days\n"
-                              f"{done * DONATION_AMOUNT:,} coins")
+                        value=f"**{round(100 * done / possible) if possible else 0}%** · {done}/{possible} member-days")
     if stats["bosses_today"]:
         embed.add_field(name="Guild bosses today", value="\n".join(
             f"<t:{ts}:t> · {n}/{sum(i in linked for i, _ in tracked)} attended" for ts, n in stats["bosses_today"]))
