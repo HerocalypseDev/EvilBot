@@ -31,6 +31,16 @@ def link_lines(igns):
     return [f"**{escape_markdown(ign)}** · <@{i}>" for i, ign in sorted(igns.items(), key=lambda x: x[1].lower())]
 
 
+def pack_lines(lines, limit=2000):
+    """Join lines into as few messages as fit, each at most `limit` characters (Discord's message cap)."""
+    messages = [""]
+    for line in lines:
+        if messages[-1] and len(messages[-1]) + 1 + len(line) > limit:
+            messages.append("")
+        messages[-1] += ("\n" if messages[-1] else "") + line
+    return messages
+
+
 def paginate(items, page, size=10):
     """Returns (items on the page, page clamped to the valid range, page count)."""
     pages = max(1, -(-len(items) // size))

@@ -700,11 +700,10 @@ async def linked(interaction: discord.Interaction):
     if not lines:
         return await interaction.response.send_message("Nobody is linked yet.", ephemeral=True)
     none = discord.AllowedMentions.none()  # show the names without pinging anyone
-    groups = reminders.chunks(lines, 20)  # 20 lines of the longest names stay under Discord's 2000-character cap
-    await interaction.response.send_message(f"**Linked members ({len(lines)})**\n" + "\n".join(groups[0]),
-                                            allowed_mentions=none)
-    for group in groups[1:]:
-        await interaction.followup.send("\n".join(group), allowed_mentions=none)
+    messages = board.pack_lines([f"**Linked members ({len(lines)})**", *lines])
+    await interaction.response.send_message(messages[0], allowed_mentions=none)
+    for text in messages[1:]:
+        await interaction.followup.send(text, allowed_mentions=none)
 
 
 @bot.tree.command(description="Remove a link. Staff can unlink other members.")

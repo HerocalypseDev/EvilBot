@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import db
 from board import (attend_board_data, attend_data_sections, attend_report, board_data, boss_lists, member_day,
                    data_sections, day_lists, join_capped, link_lines, missed_in_row, next_reset_ts, not_donated,
-                   paginate, short)
+                   pack_lines, paginate, short)
 
 G, DAY, YDAY = 1, "2026-10-22", "2026-10-21"
 
@@ -187,3 +187,8 @@ def test_attend_report_and_missed_in_row():
 
 def test_link_lines():
     assert link_lines({2: "zed", 1: "Alpha_1"}) == [r"**Alpha\_1** · <@1>", "**zed** · <@2>"]
+
+
+def test_pack_lines():
+    assert pack_lines(["a" * 10] * 35, limit=2000) == ["\n".join(["a" * 10] * 35)]  # fits: one message
+    assert pack_lines(["aaaa", "bbbb", "cc"], limit=9) == ["aaaa\nbbbb", "cc"]
