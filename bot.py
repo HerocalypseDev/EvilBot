@@ -859,7 +859,7 @@ async def before_tick():
             log.exception("Startup board refresh failed for guild %s", guild.id)
 
 
-@bot.tree.command(description="Post the donation panel in a channel.")
+@bot.tree.command(description="Staff: post the donation panel and set the officer role (needs Manage Server).")
 @app_commands.guild_only()
 @app_commands.default_permissions(manage_guild=True)
 @app_commands.checks.has_permissions(manage_guild=True)
@@ -1705,6 +1705,91 @@ async def boss_missed(interaction: discord.Interaction, count: app_commands.Rang
         header += f" Only {checked} bosses so far."
     await send_text(interaction, header, [discord.utils.escape_markdown(n) for n in names] or ["Nobody."],
                     "boss_missed.txt")
+
+
+def command_lines():
+    """(member lines, staff lines) for /help, read from the commands themselves, so new ones show up."""
+    member, staff = [], []
+    for command in bot.tree.get_commands():
+        for c in command.commands if isinstance(command, app_commands.Group) else [command]:
+            text = c.description
+            (staff if text.startswith("Staff:") else member).append(
+                f"`/{c.qualified_name}` · {text.removeprefix('Staff:').strip()}")
+    return sorted(member), sorted(staff)
+
+
+@bot.tree.command(description="Every command and what it does.")
+@app_commands.guild_only()
+async def help(interaction: discord.Interaction):
+    member, staff = command_lines()
+    embed = discord.Embed(title="Evil Donations · help",
+                          description="Log a donation once per UTC day with the **Log donation** button, and log "
+                                      "guild boss attendance with **I attended**. The day resets at 00:00 UTC.")
+    for k, chunk in enumerate(board.pack_lines(member, 1024)):
+        embed.add_field(name="Commands" if k == 0 else "Commands (more)", value=chunk, inline=False)
+    if is_staff(interaction):
+        for k, chunk in enumerate(board.pack_lines(staff, 1024)):
+            embed.add_field(name="Staff commands" if k == 0 else "Staff commands (more)", value=chunk, inline=False)
+    await interaction.response.send_message(embed=brand(embed, interaction.guild, f"Version {VERSION}"), ephemeral=True)
+
+
+class DashboardView(discord.ui.View):
+    """Shortcut buttons under /dashboard. Each runs the same code as its command."""
+
+    def __init__(self):
+        super().__init__(timeout=600)
+        for label, command in (("Today's donations", history), ("Latest boss", boss_attendance),
+                               ("Missed bosses", boss_missed), ("Export CSV", export), ("Backup", backup_db)):
+            button = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary)
+            button.callback = self._run(command)
+            self.add_item(button)
+
+    @staticmethod
+    def _run(command):
+        async def callback(interaction):
+            await command.callback(interaction)
+            await refresh_all(interaction.guild)
+        return callback
+
+
+@bot.tree.command(description="Staff: today's numbers at a glance, with shortcut buttons.")
+@app_commands.guild_only()
+async def dashboard(interaction: discord.Interaction):
+    if not await require_staff(interaction):
+        return
+    row = db.get_guild(bot.db, interaction.guild_id)
+    if not row:
+        return await interaction.response.send_message("Run /setup first.", ephemeral=True)
+    guild, now = interaction.guild, datetime.now(timezone.utc)
+    tracked = tracked_members(guild, row["member_role_id"])
+    data = board.board_data(bot.db, guild.id, tracked, db.today_utc(), db.yesterday_utc())
+    linked = db.get_igns(bot.db, guild.id)
+    embed = discord.Embed(title="Staff dashboard", description=f"{db.today_utc()} (UTC) · resets <t:{data['reset_ts']}:R>")
+    embed.add_field(name="Donated today", value=f"**{data['today_count']}** of {len(tracked)}\n"
+                    f"`{board.bar(data['today_count'], len(tracked))}`")
+    embed.add_field(name="Not donated", value=f"**{len(data['waiting'])}**")
+    embed.add_field(name="Yesterday", value=f"**{data['yesterday_count']}** donated\n{data['yesterday_coins']:,} coins")
+    embed.add_field(name="Linked", value=f"**{sum(i in linked for i, _ in tracked)}** of {len(tracked)} members\n"
+                    f"{len(db.roster_names(bot.db, guild.id, only_free=True))} roster names free")
+    latest = db.started_boss(bot.db, guild.id, now.isoformat(timespec="seconds"))
+    if latest:
+        t = iso_utc(latest["boss_time"])
+        embed.add_field(name="Latest guild boss", value=f"<t:{int(t.timestamp())}:t> · logging "
+                        f"{boss.attend_state(t, now)}\n**{len(db.attendance_for_boss(bot.db, latest['id']))}** attended")
+    poll = db.latest_boss_poll(bot.db, guild.id)
+    if row["boss_channel_id"] and poll:
+        embed.add_field(name="Boss poll", value=f"Open for <t:{int(iso_utc(poll['cycle_start']).timestamp())}:t>"
+                        if not poll["resolved_time"] else "Next poll soon")
+    checked, missed = board.missed_in_row(bot.db, guild.id, tracked, now, 4)
+    if checked:
+        embed.add_field(name=f"Missed the last {checked} bosses", value=f"**{len(missed)}** members")
+    channels = [("Panel", row["panel_channel_id"]), ("Boss polls", row["boss_channel_id"]),
+             ("Attendance", row["attend_channel_id"]), ("Data", row["data_channel_id"]),
+             ("Attendance data", row["attend_data_channel_id"]), ("Staff", row["staff_channel_id"])]
+    embed.add_field(name="Channels", inline=False, value="\n".join(
+        f"{name}: {f'<#{cid}>' if cid else 'not set'}" for name, cid in channels))
+    await interaction.response.send_message(embed=brand(embed, guild, f"Version {VERSION}"), view=DashboardView(),
+                                            ephemeral=True)
 
 
 @setup.error
