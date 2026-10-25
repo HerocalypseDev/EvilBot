@@ -112,3 +112,29 @@ def attend_board_data(conn, guild_id, tracked, now):
                    len(db.attendance_for_boss(conn, b["id"])))
                   for b in db.bosses_for_day(conn, guild_id, now.date().isoformat()) if b["boss_time"] <= now_text],
     }
+
+
+def attend_data_sections(conn, guild_id, tracked, now):
+    """Lists for the attendance data channel. Returns (boss info or None, sections).
+    info: (boss unix time, close unix time, state) of the newest boss that has started.
+    attended: (discord name, in-game name, unix time logged), newest first.
+    not_attended: linked members who did not log that boss, by in-game name.
+    today_totals: (in-game name, 'attended/bosses') for linked members, bosses started today."""
+    now_text = now.isoformat(timespec="seconds")
+    row = db.started_boss(conn, guild_id, now_text)
+    igns = db.get_igns(conn, guild_id)
+    linked = sorted(((i, name, igns[i]) for i, name in tracked if i in igns), key=lambda r: r[2].lower())
+    info, attended, attended_ids = None, [], set()
+    if row:
+        t = datetime.fromisoformat(row["boss_time"])
+        info = (int(t.timestamp()), int((t + boss.ATTEND_WINDOW).timestamp()), boss.attend_state(t, now))
+        for r in db.attendance_for_boss(conn, row["id"]):
+            attended_ids.add(r["discord_id"])
+            attended.append((r["discord_name"], r["ign"], int(datetime.fromisoformat(r["created_at"]).timestamp())))
+    today = now.date().isoformat()
+    total, counts = db.attend_counts(conn, guild_id, today, today, now_text)
+    return info, {
+        "attended": attended,
+        "not_attended": [(name, ign) for i, name, ign in linked if i not in attended_ids] if row else [],
+        "today_totals": [(ign, f"{counts.get(i, 0)}/{total}") for i, _, ign in linked],
+    }

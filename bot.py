@@ -70,6 +70,7 @@ def board_embed(data):
 
 _board_lock = asyncio.Lock()  # two quick refreshes must not post two boards
 _data_lock = asyncio.Lock()
+_attend_data_lock = asyncio.Lock()
 
 
 async def refresh_board(guild):
@@ -84,6 +85,11 @@ DATA_SECTIONS = {
     "not_donated": ("Not donated yet", ("Discord name", "In-game name")),
     "not_linked": ("Not linked", ("In-game name",)),
 }
+ATTEND_SECTIONS = {  # the attendance data channel, same layout
+    "attended": ("Attended", ("Discord name", "In-game name", "Logged at")),
+    "not_attended": ("Not attended", ("Discord name", "In-game name")),
+    "today_totals": ("Bosses today (UTC day)", ("In-game name", "Attended")),
+}
 data_pages = {}  # (guild_id, section) -> page shown. Resets to page 1 after a restart.
 
 
@@ -96,13 +102,25 @@ def data_header_embed(sections):
                     f"Not linked: **{counts['not_linked']}**")
 
 
+def attend_header_embed(info, sections):
+    if not info:
+        text = "No boss yet."
+    else:
+        boss_ts, close_ts, state = info
+        text = f"Boss at <t:{boss_ts}:t> · logging {'open until' if state == 'open' else 'closed at'} <t:{close_ts}:t>"
+    return discord.Embed(
+        title="Boss attendance data",
+        description=f"{text}\nAttended: **{len(sections['attended'])}** · "
+                    f"Not attended: **{len(sections['not_attended'])}**")
+
+
 def data_section_embed(guild_id, key, rows):
-    title, columns = DATA_SECTIONS[key]
+    title, columns = {**DATA_SECTIONS, **ATTEND_SECTIONS}[key]
     chunk, page, pages = board.paginate(rows, data_pages.get((guild_id, key), 0), DATA_PAGE)
     data_pages[(guild_id, key)] = page
     embed = discord.Embed(title=f"{title} ({len(rows)})")
     if chunk:  # one line per person: side-by-side columns stack up on mobile
-        lines = [" · ".join(f"<t:{cell}:t>" if column == "Donated at" else board.short(cell)
+        lines = [" · ".join(f"<t:{cell}:t>" if column in ("Donated at", "Logged at") else board.short(cell)
                             for column, cell in zip(columns, row)) for row in chunk]
         embed.add_field(name=" · ".join(columns), value="\n".join(lines), inline=False)
     else:
@@ -128,8 +146,11 @@ class DataView(discord.ui.View):
             row = db.get_guild(bot.db, guild.id)
             footer = interaction.message.embeds[0].footer.text or "Page 1/1"
             data_pages[(guild.id, key)] = int(footer.split()[1].split("/")[0]) - 1 + step
-            sections = board.data_sections(bot.db, guild.id, tracked_members(guild, row["member_role_id"]),
-                                           db.today_utc())
+            tracked = tracked_members(guild, row["member_role_id"])
+            if key in ATTEND_SECTIONS:
+                sections = board.attend_data_sections(bot.db, guild.id, tracked, datetime.now(timezone.utc))[1]
+            else:
+                sections = board.data_sections(bot.db, guild.id, tracked, db.today_utc())
             await interaction.response.edit_message(embed=data_section_embed(guild.id, key, sections[key]))
         return callback
 
@@ -144,32 +165,54 @@ async def refresh_data(guild):
             return
         sections = board.data_sections(bot.db, guild.id, tracked_members(guild, row["member_role_id"]),
                                        db.today_utc())
-        ids = json.loads(row["data_message_ids"] or "[]")
         embeds = [data_header_embed(sections)] + [data_section_embed(guild.id, key, sections[key])
                                                   for key in DATA_SECTIONS]
+        return await show_sections(guild, channel, row["data_message_ids"], "data_message_ids", embeds,
+                                   DATA_SECTIONS)
+
+
+async def refresh_attend_data(guild):
+    """refresh_data for the attendance data channel."""
+    async with _attend_data_lock:
+        row = db.get_guild(bot.db, guild.id)
+        channel = row and row["attend_data_channel_id"] and guild.get_channel(row["attend_data_channel_id"])
+        if not channel:
+            return
+        info, sections = board.attend_data_sections(bot.db, guild.id, tracked_members(guild, row["member_role_id"]),
+                                                    datetime.now(timezone.utc))
+        embeds = [attend_header_embed(info, sections)] + [data_section_embed(guild.id, key, sections[key])
+                                                          for key in ATTEND_SECTIONS]
+        return await show_sections(guild, channel, row["attend_data_message_ids"], "attend_data_message_ids",
+                                   embeds, ATTEND_SECTIONS)
+
+
+async def show_sections(guild, channel, ids_json, ids_field, embeds, keys):
+    """Edit a header and its section messages in place. If one was deleted, post them all again.
+    Returns an error text if Discord refused, else None."""
+    ids = json.loads(ids_json or "[]")
+    try:
+        if len(ids) == len(embeds):
+            for message_id, embed in zip(ids, embeds):
+                await channel.get_partial_message(message_id).edit(embed=embed)
+            return
+    except discord.NotFound:
+        pass
+    except discord.HTTPException as e:
+        log.warning("Data refresh failed in guild %s: %s", guild.id, e)
+        return str(e)
+    for message_id in ids:  # clear what is left of the old set, then post a new one
         try:
-            if len(ids) == len(embeds):
-                for message_id, embed in zip(ids, embeds):
-                    await channel.get_partial_message(message_id).edit(embed=embed)
-                return
-        except discord.NotFound:
+            await channel.get_partial_message(message_id).delete()
+        except discord.HTTPException:
             pass
-        except discord.HTTPException as e:
-            log.warning("Data refresh failed in guild %s: %s", guild.id, e)
-            return str(e)
-        for message_id in ids:  # clear what is left of the old set, then post a new one
-            try:
-                await channel.get_partial_message(message_id).delete()
-            except discord.HTTPException:
-                pass
-        try:
-            posted = [await channel.send(embed=embeds[0])]
-            for key, embed in zip(DATA_SECTIONS, embeds[1:]):
-                posted.append(await channel.send(embed=embed, view=DataView(key)))
-        except discord.HTTPException as e:
-            log.warning("Data post failed in guild %s: %s", guild.id, e)
-            return str(e)
-        db.save_guild(bot.db, guild.id, data_message_ids=json.dumps([m.id for m in posted]))
+    try:
+        posted = [await channel.send(embed=embeds[0])]
+        for key, embed in zip(keys, embeds[1:]):
+            posted.append(await channel.send(embed=embed, view=DataView(key)))
+    except discord.HTTPException as e:
+        log.warning("Data post failed in guild %s: %s", guild.id, e)
+        return str(e)
+    db.save_guild(bot.db, guild.id, **{ids_field: json.dumps([m.id for m in posted])})
 
 
 async def refresh_board_message(guild):
@@ -252,6 +295,11 @@ def attend_embed(data):
     return embed
 
 
+async def refresh_attendance(guild):
+    await refresh_attend_board(guild)
+    await refresh_attend_data(guild)
+
+
 async def refresh_attend_board(guild):
     """Same as refresh_board_message, for the attendance board."""
     async with _attend_lock:
@@ -304,7 +352,7 @@ class AttendView(discord.ui.View):
         ts = int(iso_utc(current["boss_time"]).timestamp())
         await interaction.response.send_message(f"Logged attendance for the boss at <t:{ts}:t>.",
                                                 ephemeral=True)
-        await refresh_attend_board(interaction.guild)
+        await refresh_attendance(interaction.guild)
 
 
 async def attend_tick(guild, row, now):
@@ -324,7 +372,7 @@ async def attend_tick(guild, row, now):
     key = (current["id"], state, now.date())
     if _attend_seen.get(guild.id) != key:
         _attend_seen[guild.id] = key
-        await refresh_attend_board(guild)  # also moves the board below the ping
+        await refresh_attendance(guild)  # also moves the board below the ping
 
 
 class HistoryView(discord.ui.View):
@@ -380,7 +428,7 @@ class Bot(commands.Bot):
     async def setup_hook(self):
         self.add_view(PanelView())  # keeps the panel button working after a restart
         self.add_view(AttendView())
-        for key in DATA_SECTIONS:
+        for key in [*DATA_SECTIONS, *ATTEND_SECTIONS]:
             self.add_view(DataView(key))
         await self.tree.sync()
         tick.start()
@@ -548,7 +596,7 @@ async def before_tick():
     for guild in bot.guilds:  # brings the board and button back after a /stop or crash
         try:  # an error here would stop the loop from ever starting
             await refresh_board(guild)
-            await refresh_attend_board(guild)
+            await refresh_attendance(guild)
         except Exception:
             log.exception("Startup board refresh failed for guild %s", guild.id)
 
@@ -851,7 +899,7 @@ async def attendance_start(interaction: discord.Interaction, channel: discord.Te
         except discord.HTTPException:
             pass
     db.save_guild(bot.db, interaction.guild_id, attend_channel_id=channel.id, attend_message_id=message.id)
-    await refresh_attend_board(interaction.guild)
+    await refresh_attendance(interaction.guild)
     await interaction.followup.send(f"Attendance board posted in {channel.mention}.", ephemeral=True)
 
 
@@ -865,6 +913,37 @@ async def attendance_stop(interaction: discord.Interaction):
 
 
 bot.tree.add_command(attend_group)
+
+attend_data_group = app_commands.Group(name="attendance_data", description="The boss attendance data channel.",
+                                       guild_only=True)
+
+
+@attend_data_group.command(name="start", description="Staff: show boss attendance data in a channel.")
+async def attendance_data_start(interaction: discord.Interaction, channel: discord.TextChannel):
+    if not await require_staff(interaction):
+        return
+    if not db.get_guild(bot.db, interaction.guild_id):
+        return await interaction.response.send_message("Run /setup first.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    db.save_guild(bot.db, interaction.guild_id, attend_data_channel_id=channel.id)
+    error = await refresh_attend_data(interaction.guild)
+    if error:
+        return await interaction.followup.send(
+            f"Could not post in {channel.mention}: {error}\nGive the bot View Channel, Send Messages and "
+            "Embed Links in that channel, then run /attendance_data start again.", ephemeral=True)
+    await interaction.followup.send(f"Attendance data posted in {channel.mention}.", ephemeral=True)
+
+
+@attend_data_group.command(name="stop", description="Staff: stop updating the attendance data channel.")
+async def attendance_data_stop(interaction: discord.Interaction):
+    if not await require_staff(interaction):
+        return
+    db.save_guild(bot.db, interaction.guild_id, attend_data_channel_id=None)
+    await interaction.response.send_message("Attendance data stopped. Its messages stay as they are.",
+                                            ephemeral=True)
+
+
+bot.tree.add_command(attend_data_group)
 
 
 @setup.error

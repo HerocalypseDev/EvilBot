@@ -221,6 +221,18 @@ def unattend(conn, boss_id, discord_id):
                             (boss_id, discord_id)).rowcount == 1
 
 
+def attend_counts(conn, guild_id, first_day, last_day, now):
+    """Bosses from first_day to last_day that started by `now` (ISO 8601 UTC).
+    Returns (boss count, {discord_id: bosses attended})."""
+    where = "guild_id = ? AND day_utc BETWEEN ? AND ? AND boss_time <= ?"
+    args = (guild_id, first_day, last_day, now)
+    total = conn.execute(f"SELECT COUNT(*) FROM bosses WHERE {where}", args).fetchone()[0]
+    counts = {r[0]: r[1] for r in conn.execute(
+        f"SELECT discord_id, COUNT(*) FROM attendance WHERE boss_id IN (SELECT id FROM bosses WHERE {where}) "
+        "GROUP BY discord_id", args)}
+    return total, counts
+
+
 def attendance_for_boss(conn, boss_id):
     """Newest first."""
     return conn.execute("SELECT * FROM attendance WHERE boss_id = ? ORDER BY created_at DESC, rowid DESC",

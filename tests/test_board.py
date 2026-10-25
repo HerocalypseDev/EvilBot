@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 import db
-from board import attend_board_data, board_data, data_sections, day_lists, join_capped, short, next_reset_ts, not_donated, paginate
+from board import attend_board_data, attend_data_sections, board_data, data_sections, day_lists, join_capped, short, next_reset_ts, not_donated, paginate
 
 G, DAY, YDAY = 1, "2026-10-22", "2026-10-21"
 
@@ -129,3 +129,22 @@ def test_attend_board_data():
     assert data["boss_ts"] == int(t.timestamp()) and data["state"] == "closed"
     assert data["attended"] == ["Ann"] and data["waiting"] == ["Bob", "Cy (not linked)"]
     assert data["today"] == [(int(t.timestamp()), 1)]
+
+
+def test_attend_data_sections():
+    conn = conn_with((1, "Bob"), (2, "ann"))
+    tracked = [(1, "b"), (2, "a"), (3, "Cy")]  # Cy is not linked: not in these lists
+    assert attend_data_sections(conn, G, tracked, datetime(2026, 10, 22, 1, tzinfo=timezone.utc)) == (
+        None, {"attended": [], "not_attended": [], "today_totals": [("ann", "0/0"), ("Bob", "0/0")]})
+    for hour in (2, 8):
+        db.add_boss(conn, G, f"2026-10-22T0{hour}:00:00+00:00")
+    first = db.get_boss(conn, G, "2026-10-22T02:00:00+00:00")["id"]
+    db.attend(conn, first, 1, "b", "Bob")
+    db.add_boss(conn, G, "2026-10-21T20:00:00+00:00")  # yesterday: not in today's totals
+    db.attend(conn, db.get_boss(conn, G, "2026-10-21T20:00:00+00:00")["id"], 2, "a", "ann")
+    now = datetime(2026, 10, 22, 8, 30, tzinfo=timezone.utc)
+    info, sections = attend_data_sections(conn, G, tracked, now)
+    eight = int(datetime(2026, 10, 22, 8, tzinfo=timezone.utc).timestamp())
+    assert info == (eight, eight + 3600, "open")
+    assert sections["attended"] == [] and sections["not_attended"] == [("a", "ann"), ("b", "Bob")]
+    assert sections["today_totals"] == [("ann", "0/2"), ("Bob", "1/2")]
