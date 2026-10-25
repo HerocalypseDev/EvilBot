@@ -494,6 +494,7 @@ class Bot(commands.Bot):
         self.add_view(PanelView())  # keeps the panel button working after a restart
         self.add_view(AttendView())
         self.add_view(BossPollView())
+        self.add_view(LinkRequestView())
         for key in [*DATA_SECTIONS, *ATTEND_SECTIONS]:
             self.add_view(DataView(key))
         await self.tree.sync()
@@ -998,6 +999,95 @@ async def unlink(interaction: discord.Interaction, member: discord.User | None =
     else:
         msg = f"{target.display_name} has no link."
     await interaction.response.send_message(msg, ephemeral=True)
+
+
+class LinkRequestView(discord.ui.View):
+    """Approve / Deny under a link request in the staff channel. The member and name are read back from the
+    embed, so the buttons keep working after a restart."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @staticmethod
+    def request(message):
+        fields = {f.name: f.value for f in message.embeds[0].fields}
+        return int(fields["Member"].strip("<@!>")), fields["In-game name"]
+
+    async def close(self, interaction, member_id, text, dm):
+        embed = interaction.message.embeds[0]
+        embed.add_field(name="Result", value=text, inline=False)
+        await interaction.response.edit_message(embed=embed, view=None)
+        member = interaction.guild.get_member(member_id)
+        try:
+            if member:
+                await member.send(dm)
+        except discord.HTTPException:  # DMs closed: the member sees it in /me instead
+            pass
+
+    @discord.ui.button(label="Approve", style=discord.ButtonStyle.green, custom_id="linkreq_approve")
+    async def approve(self, interaction, button):
+        if not await require_staff(interaction):
+            return
+        member_id, ign = self.request(interaction.message)
+        try:
+            name = db.link(bot.db, interaction.guild_id, member_id, ign)
+        except db.NotInRoster:
+            return await interaction.response.send_message("That name is no longer on the roster.", ephemeral=True)
+        except db.AlreadyLinked:
+            return await interaction.response.send_message("That member is already linked. Use /unlink first.",
+                                                           ephemeral=True)
+        except db.IgnTaken:
+            return await interaction.response.send_message("That in-game name is already taken.", ephemeral=True)
+        await self.close(interaction, member_id, f"Approved by {interaction.user.mention}",
+                         f"Your link to **{name}** in {interaction.guild.name} was approved. You can log donations now.")
+        await audit(interaction, f"approved the link request of <@{member_id}> for **{discord.utils.escape_markdown(name)}**.")
+        await refresh_all(interaction.guild)
+
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.secondary, custom_id="linkreq_deny")
+    async def deny(self, interaction, button):
+        if not await require_staff(interaction):
+            return
+        member_id, ign = self.request(interaction.message)
+        await self.close(interaction, member_id, f"Denied by {interaction.user.mention}",
+                         f"Your link request for **{ign}** in {interaction.guild.name} was denied. Ask an officer why.")
+        await audit(interaction, f"denied the link request of <@{member_id}> for **{ign}**.")
+
+
+@bot.tree.command(name="link_request", description="Ask staff to link you to your in-game name.")
+@app_commands.guild_only()
+@app_commands.describe(ingame_username="Pick your in-game name from the list")
+@app_commands.autocomplete(ingame_username=link_autocomplete)
+async def link_request(interaction: discord.Interaction, ingame_username: str):
+    row = db.get_guild(bot.db, interaction.guild_id)
+    if not row:
+        return await interaction.response.send_message("Bot is not set up yet.", ephemeral=True)
+    if not interaction.user.get_role(row["member_role_id"]):
+        return await interaction.response.send_message(f"You need the {MEMBER_ROLE_NAME} role first.", ephemeral=True)
+    current = db.get_ign(bot.db, interaction.guild_id, interaction.user.id)
+    if current:
+        return await interaction.response.send_message(f"You are already linked to **{current}**.", ephemeral=True)
+    free = db.roster_names(bot.db, interaction.guild_id, ingame_username.strip(), only_free=True)
+    name = next((n for n in free if n.lower() == ingame_username.strip().lower()), None)
+    if not name:
+        return await interaction.response.send_message(
+            "That name is not on the roster or is already taken. Pick one from the list, or ask an officer.",
+            ephemeral=True)
+    channel = row["staff_channel_id"] and interaction.guild.get_channel(row["staff_channel_id"])
+    if not channel:
+        return await interaction.response.send_message("Link requests are not set up. Ask an officer to link you.",
+                                                       ephemeral=True)
+    embed = discord.Embed(title="Link request", description="Approve to link this member to the name.")
+    embed.add_field(name="Member", value=interaction.user.mention)
+    embed.add_field(name="In-game name", value=name)
+    embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
+    try:
+        await channel.send(embed=brand(embed, footer="Requested"), view=LinkRequestView())
+    except discord.HTTPException as e:
+        log.warning("Link request post failed in guild %s: %s", interaction.guild_id, e)
+        return await interaction.response.send_message("Could not reach the staff. Ask an officer to link you.",
+                                                       ephemeral=True)
+    await interaction.response.send_message(f"Request sent for **{name}**. You get a DM when staff answer.",
+                                            ephemeral=True)
 
 
 @bot.tree.command(name="link_member", description="Staff: link a member to an in-game name from the roster.")
