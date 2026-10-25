@@ -1,3 +1,5 @@
+import csv
+import io
 import re
 from datetime import date, datetime, timedelta, timezone
 
@@ -134,6 +136,8 @@ def member_card(conn, guild_id, tracked, discord_id, now):
         "last_14": [(d - timedelta(days=k)).isoformat() in mine for k in range(13, -1, -1)],  # oldest first
         "boss_attended": boss_counts.get(discord_id, 0),
         "boss_total": boss_total,
+        "boss_streak": boss_streak(db.started_bosses(conn, guild_id, now.isoformat(timespec="seconds")),
+                                   db.attended_bosses(conn, guild_id).get(discord_id, set()), now),
     }
 
 
@@ -151,6 +155,49 @@ def weekly_leaderboard(conn, guild_id, tracked, week_start):
         "perfect": [ign for ign, n, _ in by_name if n == 7],
         "improved": [(ign, n - b) for ign, n, b in sorted(by_name, key=lambda r: r[2] - r[1]) if n > b][:3],
     }
+
+
+def boss_streak(bosses, attended, now):
+    """Bosses in a row attended, newest first. bosses = started boss rows, newest first. A boss whose
+    logging is still open does not break the streak yet."""
+    n = 0
+    for k, b in enumerate(bosses):
+        if b["id"] in attended:
+            n += 1
+        elif not (k == 0 and boss.attend_state(datetime.fromisoformat(b["boss_time"]), now) == "open"):
+            break
+    return n
+
+
+def monthly_report(conn, guild_id, tracked, month, now):
+    """month = 'YYYY-MM'. Linked members' month: [(ign, discord name, donation days, bosses attended)] by name,
+    plus the boss count, the current boss streaks and the month's day count."""
+    first = date.fromisoformat(f"{month}-01")
+    last = (first + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+    igns, days = db.get_igns(conn, guild_id), db.donation_days(conn, guild_id)
+    boss_total, counts = db.attend_counts(conn, guild_id, first.isoformat(), last.isoformat(),
+                                          now.isoformat(timespec="seconds"))
+    bosses = db.started_bosses(conn, guild_id, now.isoformat(timespec="seconds"))
+    attended = db.attended_bosses(conn, guild_id)
+    linked = sorted(((i, name, igns[i]) for i, name in tracked if i in igns), key=lambda r: r[2].lower())
+    return {
+        "rows": [(ign, name, sum(d.startswith(month) for d in days.get(i, set())), counts.get(i, 0))
+                 for i, name, ign in linked],
+        "boss_total": boss_total,
+        "streaks": sorted(((ign, boss_streak(bosses, attended.get(i, set()), now)) for i, _, ign in linked),
+                          key=lambda r: (-r[1], r[0].lower())),
+        "days_in_month": last.day,
+    }
+
+
+def monthly_csv(report, amount):
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(("in_game_name", "discord_name", "donation_days", "coins", "bosses_attended", "bosses_total"))
+    for ign, name, donated, attended in report["rows"]:
+        writer.writerow([db.safe_cell(ign), db.safe_cell(name), donated, donated * amount, attended,
+                         report["boss_total"]])
+    return out.getvalue()
 
 
 def not_donated(conn, guild_id, tracked, day):

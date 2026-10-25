@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta, timezone
 import db
 from board import (attend_board_data, bar, best_streak, member_card, streak, top_streaks, attend_data_sections, attend_report, board_data, boss_lists, member_day,
                    data_sections, day_lists, join_capped, link_lines, log_all, member_ids, missed_in_row, next_reset_ts, not_donated,
-                   pack_lines, paginate, short, weekly_leaderboard)
+                   monthly_csv, monthly_report, pack_lines, paginate, short, weekly_leaderboard)
 
 G, DAY, YDAY = 1, "2026-10-22", "2026-10-21"
 
@@ -239,3 +239,24 @@ def test_weekly_leaderboard():
     db.record(conn, G, 1, "one", "Aa", "2026-10-18")  # week before: Aa 1 day, Bb 0
     data = weekly_leaderboard(conn, G, [(1, "one"), (2, "two"), (3, "three")], start)
     assert data == {"top": [("Aa", 7), ("Bb", 2)], "perfect": ["Aa"], "improved": [("Aa", 6), ("Bb", 2)]}
+
+
+def test_monthly_report_and_boss_streak():
+    conn = conn_with((1, "Aa"), (2, "Bb"))
+    for t in ("2026-10-21T12:00:00+00:00", "2026-10-22T12:00:00+00:00", "2026-10-22T18:00:00+00:00"):
+        db.add_boss(conn, G, t)
+    ids = [b["id"] for b in db.started_bosses(conn, G, "2026-10-31T00:00:00+00:00")]  # newest first
+    for b in ids[1:]:
+        db.attend(conn, b, 1, "one", "Aa")
+    db.attend(conn, ids[0], 2, "two", "Bb")
+    db.record(conn, G, 1, "one", "Aa", DAY)
+    db.record(conn, G, 1, "one", "Aa", "2026-09-30")  # other month
+    # 18:30: the 18:00 boss is still open, so Aa's streak of two holds
+    open_now = datetime(2026, 10, 22, 18, 30, tzinfo=timezone.utc)
+    later = datetime(2026, 10, 31, tzinfo=timezone.utc)
+    assert dict(monthly_report(conn, G, [(1, "one"), (2, "two")], "2026-10", open_now)["streaks"])["Aa"] == 2
+    report = monthly_report(conn, G, [(1, "one"), (2, "two")], "2026-10", later)
+    assert report["rows"] == [("Aa", "one", 1, 2), ("Bb", "two", 0, 1)]
+    assert (report["boss_total"], report["days_in_month"]) == (3, 31)
+    assert report["streaks"] == [("Bb", 1), ("Aa", 0)]
+    assert monthly_csv(report, 50_000).splitlines()[1] == "Aa,one,1,50000,2,3"

@@ -248,6 +248,21 @@ def recent_bosses(conn, guild_id, now, count):
         (guild_id, now, count))]
 
 
+def started_bosses(conn, guild_id, now):
+    """Bosses that started by `now` (ISO 8601 UTC), newest first."""
+    return conn.execute("SELECT * FROM bosses WHERE guild_id = ? AND boss_time <= ? ORDER BY boss_time DESC",
+                        (guild_id, now)).fetchall()
+
+
+def attended_bosses(conn, guild_id):
+    """{discord_id: set of boss ids attended}."""
+    out = {}
+    for r in conn.execute("SELECT a.discord_id, a.boss_id FROM attendance a JOIN bosses b ON b.id = a.boss_id "
+                          "WHERE b.guild_id = ?", (guild_id,)):
+        out.setdefault(r[0], set()).add(r[1])
+    return out
+
+
 def attendance_for_boss(conn, boss_id):
     """Newest first."""
     return conn.execute("SELECT * FROM attendance WHERE boss_id = ? ORDER BY created_at DESC, rowid DESC",
@@ -416,7 +431,7 @@ _CSV_COLUMNS = ("id", "day_utc", "discord_id", "discord_name", "ign", "amount", 
                 "logged_by", "reviewed_by", "created_at", "reviewed_at")
 
 
-def _safe_cell(value):
+def safe_cell(value):
     # a leading = + - @ makes Excel and Sheets run the cell as a formula
     if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
         return "'" + value
@@ -428,5 +443,5 @@ def export_csv(conn, guild_id):
     writer = csv.writer(out)
     writer.writerow(_CSV_COLUMNS)
     for row in conn.execute("SELECT * FROM submissions WHERE guild_id = ? ORDER BY id", (guild_id,)):
-        writer.writerow([_safe_cell(row[c]) for c in _CSV_COLUMNS])
+        writer.writerow([safe_cell(row[c]) for c in _CSV_COLUMNS])
     return out.getvalue()

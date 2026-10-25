@@ -658,6 +658,52 @@ async def post_weekly_leaderboard(guild, row, now):
     await refresh_board(guild)  # the post pushed the board up: move it back to the bottom
 
 
+async def post_monthly(guild, row, now):
+    """On the 1st (UTC): last month's report and CSV in the staff channel, and the attendance
+    leaderboard in the attendance channel. Once per month."""
+    month = (now.date().replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+    if now.day != 1 or not db.claim_post(bot.db, guild.id, "monthly", month):
+        return
+    report = board.monthly_report(bot.db, guild.id, tracked_members(guild, row["member_role_id"]), month, now)
+    rows, total, esc = report["rows"], report["boss_total"], discord.utils.escape_markdown
+    title_month = datetime.strptime(month, "%Y-%m").strftime("%B %Y")
+    donated = sum(r[2] for r in rows)
+    possible = len(rows) * report["days_in_month"]
+    embed = discord.Embed(title=f"Monthly report · {title_month}", description=f"{len(rows)} linked members (UTC days)")
+    embed.add_field(name="Donations", value=f"**{donated}** of {possible} member-days"
+                    + (f" ({round(100 * donated / possible)}%)" if possible else "")
+                    + f"\n**{donated * DONATION_AMOUNT:,}** coins")
+    attended = sum(r[3] for r in rows)
+    embed.add_field(name="Guild bosses", value=f"**{total}** bosses\n**{attended}** attendances"
+                    + (f" ({round(100 * attended / (total * len(rows)))}%)" if total and rows else ""))
+    lowest = sorted(rows, key=lambda r: (r[2], r[0].lower()))[:5]
+    embed.add_field(name="Fewest donation days", inline=False,
+                    value="\n".join(f"{esc(ign)} · {d} days" for ign, _, d, _ in lowest) or "No linked members.")
+    csv_data = board.monthly_csv(report, DONATION_AMOUNT).encode("utf-8-sig")  # BOM: Excel reads UTF-8
+    await staff_post(guild, embed=brand(embed, guild, "Full numbers in the attached file"),
+                     file=discord.File(io.BytesIO(csv_data), f"report-{month}.csv"))
+
+    channel = row["attend_channel_id"] and guild.get_channel(row["attend_channel_id"])
+    if channel and total:
+        top = sorted(rows, key=lambda r: (-r[3], r[0].lower()))[:10]
+        leaders = discord.Embed(title=f"Guild boss attendance · {title_month}",
+                                     description=f"{total} guild bosses this month")
+        leaders.add_field(name="Most attended", inline=False, value="\n".join(
+            f"**{k}.** {esc(ign)} · {a}/{total}" for k, (ign, _, _, a) in enumerate(top, 1) if a) or "Nobody attended.")
+        perfect = [esc(ign) for ign, _, _, a in rows if a == total]
+        leaders.add_field(name=f"Perfect attendance ({len(perfect)})", inline=False,
+                               value=board.join_capped(perfect) or "Nobody this time.")
+        streaks = [(ign, n) for ign, n in report["streaks"] if n >= 2][:5]
+        leaders.add_field(name="Longest running streaks", inline=False,
+                               value="\n".join(f"{esc(ign)} · {n} bosses in a row" for ign, n in streaks) or "None yet.")
+        try:
+            await channel.send(embed=brand(leaders, guild, "A new leaderboard on the 1st of each month"))
+        except discord.HTTPException as e:
+            log.warning("Monthly attendance leaderboard failed in guild %s: %s", guild.id, e)
+        await refresh_attendance(guild)  # move the attendance board back to the bottom
+    log.info("Monthly report posted for %s in guild %s", month, guild.id)
+
+
 _backup_failed_day = None
 
 
@@ -676,6 +722,7 @@ async def tick():
             if row["attend_channel_id"]:
                 await attend_tick(guild, row, now)
             await post_weekly_leaderboard(guild, row, now)
+            await post_monthly(guild, row, now)
             if row["board_day"] != today:
                 await refresh_board(guild)
                 db.save_guild(bot.db, guild.id, board_day=today)
@@ -878,6 +925,7 @@ async def me(interaction: discord.Interaction):
                         value=f"**{card['boss_attended']}** of {card['boss_total']} attended\n"
                               f"`{board.bar(card['boss_attended'], card['boss_total'])}` "
                               f"{round(100 * card['boss_attended'] / card['boss_total'])}%")
+    embed.add_field(name="Guild boss streak", value=f"**{card['boss_streak']}** bosses in a row")
     embed.add_field(name="Last donation", value=f"<t:{card['last_ts']}:R>" if card["last_ts"] else "None yet")
     if card["next_badge"]:
         to_go, name = card["next_badge"]
