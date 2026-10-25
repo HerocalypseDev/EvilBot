@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 from discord.utils import escape_markdown
 
+import boss
 import db
 from config import RECENT_DONORS
 
@@ -83,4 +84,31 @@ def board_data(conn, guild_id, tracked, today, yesterday, now=None):
         "waiting": [name for _, name in not_donated(conn, guild_id, tracked, today)],
         "yesterday_count": y_count,
         "yesterday_coins": y_coins,
+    }
+
+
+def not_attended(conn, guild_id, tracked, boss_id):
+    """Like not_donated, for one boss. Returns [(discord_id, board_name)]."""
+    attended = {r["discord_id"] for r in db.attendance_for_boss(conn, boss_id)}
+    igns = db.get_igns(conn, guild_id)
+    return [(i, igns.get(i) or f"{name} (not linked)") for i, name in tracked if i not in attended]
+
+
+def attend_board_data(conn, guild_id, tracked, now):
+    """Attendance board for the newest boss that has started, or None if there is none yet."""
+    now_text = now.isoformat(timespec="seconds")
+    row = db.started_boss(conn, guild_id, now_text)
+    if not row:
+        return None
+    t = datetime.fromisoformat(row["boss_time"])
+    return {
+        "boss_id": row["id"],
+        "boss_ts": int(t.timestamp()),
+        "close_ts": int((t + boss.ATTEND_WINDOW).timestamp()),
+        "state": boss.attend_state(t, now),
+        "attended": [r["ign"] for r in db.attendance_for_boss(conn, row["id"])],
+        "waiting": [name for _, name in not_attended(conn, guild_id, tracked, row["id"])],
+        "today": [(int(datetime.fromisoformat(b["boss_time"]).timestamp()),
+                   len(db.attendance_for_boss(conn, b["id"])))
+                  for b in db.bosses_for_day(conn, guild_id, now.date().isoformat()) if b["boss_time"] <= now_text],
     }

@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 import db
-from boss import next_cycle_start, pick_ping, poll_text, slot_times, upcoming_cycle
+from boss import attend_state, next_cycle_start, pick_ping, poll_text, slot_times, upcoming_cycle
 
 C = datetime(2026, 10, 22, 12, 0, tzinfo=timezone.utc)  # the 12:00 cycle: options 12..17
 
@@ -82,3 +82,11 @@ def test_next_action_whole_cycle():
     assert next_action((C, at(14)), at(14, 4)) == ("wait", None)  # pinged 14:00, wait 5 min
     assert next_action((C, at(14)), at(14, 5)) == ("post", at(18))
     assert next_action((C, at(14)), at(23, 30)) == ("post", at(0, day=23))  # bot was off: skip 18:00
+
+
+def test_attend_state():
+    t = datetime(2026, 10, 22, 2, tzinfo=timezone.utc)
+    assert attend_state(t, t - timedelta(minutes=10)) == "soon"
+    assert attend_state(t, t) == "open"
+    assert attend_state(t, t + timedelta(minutes=59)) == "open"
+    assert attend_state(t, t + timedelta(hours=1)) == "closed"

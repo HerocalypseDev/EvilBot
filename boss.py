@@ -4,6 +4,7 @@ CYCLE = timedelta(hours=6)      # a guild boss spawns at 00:00, 06:00, 12:00, 18
 SLOTS = 6                       # options per poll: spawn hour to spawn hour + 5
 LEAD = timedelta(minutes=10)    # ping this long before the winning time
 NEXT_POLL_DELAY = timedelta(minutes=5)
+ATTEND_WINDOW = timedelta(hours=1)  # members log attendance from the boss time until this long after
 EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣"]
 
 
@@ -70,3 +71,16 @@ def poll_text(role_mention, cycle_start):
 def ping_text(role_mention, t):
     ts = int(t.timestamp())
     return f"{role_mention} Guild boss at <t:{ts}:t> (<t:{ts}:R>). Go to the guild island now."
+
+
+def attend_state(boss_time, now):
+    """'soon' before the boss time, 'open' for ATTEND_WINDOW after it, then 'closed'."""
+    if now < boss_time:
+        return "soon"
+    return "open" if now < boss_time + ATTEND_WINDOW else "closed"
+
+
+def attend_open_text(role_mention, boss_time):
+    close = int((boss_time + ATTEND_WINDOW).timestamp())
+    return (f"{role_mention} Guild boss started. Press **I attended** below if you joined. "
+            f"Logging closes <t:{close}:t> (<t:{close}:R>).")

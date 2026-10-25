@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 import db
-from board import board_data, data_sections, day_lists, join_capped, short, next_reset_ts, not_donated, paginate
+from board import attend_board_data, board_data, data_sections, day_lists, join_capped, short, next_reset_ts, not_donated, paginate
 
 G, DAY, YDAY = 1, "2026-10-22", "2026-10-21"
 
@@ -114,3 +114,18 @@ def test_day_lists_splits_one_past_day():
     donated, waiting = day_lists(conn, G, [(1, "A"), (2, "B"), (3, "C")], DAY)
     assert [(name, ign) for name, ign, _ in donated] == [("B", "Beta")]
     assert waiting == ["Alpha", "C (not linked)"]
+
+
+def test_attend_board_data():
+    conn = conn_with((1, "Ann"), (2, "Bob"))
+    tracked = [(1, "a"), (2, "b"), (3, "Cy")]
+    t = datetime(2026, 10, 22, 2, tzinfo=timezone.utc)
+    assert attend_board_data(conn, G, tracked, t) is None
+    db.add_boss(conn, G, t.isoformat())
+    db.add_boss(conn, G, "2026-10-22T08:00:00+00:00")  # next boss, pinged early: not shown yet
+    boss_id = db.started_boss(conn, G, t.isoformat())["id"]
+    db.attend(conn, boss_id, 1, "a", "Ann")
+    data = attend_board_data(conn, G, tracked, datetime(2026, 10, 22, 7, 55, tzinfo=timezone.utc))
+    assert data["boss_ts"] == int(t.timestamp()) and data["state"] == "closed"
+    assert data["attended"] == ["Ann"] and data["waiting"] == ["Bob", "Cy (not linked)"]
+    assert data["today"] == [(int(t.timestamp()), 1)]

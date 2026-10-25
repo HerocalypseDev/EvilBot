@@ -119,7 +119,8 @@ def test_boss_attendance(conn):
     t = "2026-10-22T02:00:00+00:00"
     db.add_boss(conn, G, t)
     db.add_boss(conn, G, t)  # second ping for the same time is ignored
-    boss = db.latest_boss(conn, G)
+    assert db.started_boss(conn, G, "2026-10-22T01:59:59+00:00") is None
+    boss = db.started_boss(conn, G, t)
     assert boss["day_utc"] == DAY and [b["id"] for b in db.bosses_for_day(conn, G, DAY)] == [boss["id"]]
     assert db.get_boss(conn, G, t)["id"] == boss["id"] and db.get_boss(conn, 2, t) is None
     assert db.claim_boss_open(conn, boss["id"]) and not db.claim_boss_open(conn, boss["id"])

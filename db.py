@@ -181,9 +181,11 @@ def add_boss(conn, guild_id, boss_time):
                      (guild_id, boss_time[:10], boss_time))
 
 
-def latest_boss(conn, guild_id):
-    return conn.execute("SELECT * FROM bosses WHERE guild_id = ? ORDER BY boss_time DESC LIMIT 1",
-                        (guild_id,)).fetchone()
+def started_boss(conn, guild_id, now):
+    """Newest boss whose time is at or before `now` (ISO 8601 UTC). The next boss is added at its
+    ping, 10 minutes early, so the newest row can still be ahead while the last one's window is open."""
+    return conn.execute("SELECT * FROM bosses WHERE guild_id = ? AND boss_time <= ? "
+                        "ORDER BY boss_time DESC LIMIT 1", (guild_id, now)).fetchone()
 
 
 def bosses_for_day(conn, guild_id, day):

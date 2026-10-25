@@ -224,6 +224,109 @@ class PanelView(discord.ui.View):
         await refresh_board(interaction.guild)
 
 
+# --- attendance board: one message with the I attended button, kept at the bottom like the board ---
+
+_attend_lock = asyncio.Lock()
+_attend_seen = {}  # guild_id -> (boss id, state, day) the board last showed
+
+
+def attend_embed(data):
+    embed = discord.Embed(title="Guild boss attendance")
+    if not data:
+        embed.description = "No boss yet. Logging opens when the next boss starts."
+        return embed
+    boss_at, close = f"<t:{data['boss_ts']}:t>", f"<t:{data['close_ts']}:t>"
+    embed.description = (f"Boss at {boss_at}: logging open until {close} (<t:{data['close_ts']}:R>)."
+                         if data["state"] == "open" else
+                         f"Boss at {boss_at}: logging closed at {close}. It opens again when the next boss starts.")
+    embed.add_field(name=f"Attended ({len(data['attended'])})",
+                    value=board.join_capped([discord.utils.escape_markdown(n) for n in data["attended"]], sep="\n")
+                    or "Nobody yet.", inline=False)
+    embed.add_field(name=f"Not attended ({len(data['waiting'])})",
+                    value=board.join_capped([discord.utils.escape_markdown(n) for n in data["waiting"]], sep="\n")
+                    or "Everyone attended.", inline=False)
+    embed.add_field(name="Today's bosses (UTC day)",
+                    value="\n".join(f"<t:{ts}:t> · {n} attended" for ts, n in data["today"]) or "None yet.",
+                    inline=False)
+    embed.set_footer(text="Press I attended during the hour after the boss starts.")
+    return embed
+
+
+async def refresh_attend_board(guild):
+    """Same as refresh_board_message, for the attendance board."""
+    async with _attend_lock:
+        row = db.get_guild(bot.db, guild.id)
+        channel = row and row["attend_channel_id"] and guild.get_channel(row["attend_channel_id"])
+        if not channel or not row["attend_message_id"]:
+            return
+        embed = attend_embed(board.attend_board_data(bot.db, guild.id, tracked_members(guild, row["member_role_id"]),
+                                                     datetime.now(timezone.utc)))
+        old = channel.get_partial_message(row["attend_message_id"])
+        try:
+            if channel.last_message_id == old.id:
+                await old.edit(embed=embed, view=AttendView())
+            else:
+                try:
+                    await old.delete()
+                except discord.NotFound:
+                    pass
+                new = await channel.send(embed=embed, view=AttendView())
+                db.save_guild(bot.db, guild.id, attend_message_id=new.id)
+        except discord.HTTPException as e:
+            log.warning("Attendance board refresh failed in guild %s: %s", guild.id, e)
+
+
+class AttendView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="I attended", style=discord.ButtonStyle.green, custom_id="attend")
+    async def attend(self, interaction, button):
+        row = db.get_guild(bot.db, interaction.guild_id)
+        if not row:
+            return await interaction.response.send_message("Bot is not set up yet.", ephemeral=True)
+        if not interaction.user.get_role(row["member_role_id"]):
+            return await interaction.response.send_message(
+                "Only guild members can log attendance.", ephemeral=True)
+        ign = db.get_ign(bot.db, interaction.guild_id, interaction.user.id)
+        if not ign:
+            return await interaction.response.send_message(
+                "Link your in-game name first with /link.", ephemeral=True)
+        now = datetime.now(timezone.utc)
+        current = db.started_boss(bot.db, interaction.guild_id, now.isoformat(timespec="seconds"))
+        if not current or boss.attend_state(iso_utc(current["boss_time"]), now) != "open":
+            return await interaction.response.send_message(
+                "Logging is closed. It opens when the next guild boss starts.", ephemeral=True)
+        try:
+            db.attend(bot.db, current["id"], interaction.user.id, interaction.user.display_name, ign)
+        except db.AlreadyAttended:
+            return await interaction.response.send_message("You already logged this boss.", ephemeral=True)
+        ts = int(iso_utc(current["boss_time"]).timestamp())
+        await interaction.response.send_message(f"Logged attendance for the boss at <t:{ts}:t>.",
+                                                ephemeral=True)
+        await refresh_attend_board(interaction.guild)
+
+
+async def attend_tick(guild, row, now):
+    """Ping when a boss's logging opens. Refresh the board when the boss, its state or the day changes."""
+    current = db.started_boss(bot.db, guild.id, now.isoformat(timespec="seconds"))
+    if not current:
+        return
+    t = iso_utc(current["boss_time"])
+    state = boss.attend_state(t, now)
+    # claimed before sending, so a restart never double-pings. Bot back after the window: no ping
+    if state == "open" and db.claim_boss_open(bot.db, current["id"]):
+        channel = guild.get_channel(row["attend_channel_id"])
+        role = guild.get_role(row["member_role_id"])
+        if channel and role:
+            warn_if_role_not_pinged(await channel.send(boss.attend_open_text(role.mention, t)), role.id)
+            log.info("Attendance open for %s in guild %s", current["boss_time"], guild.id)
+    key = (current["id"], state, now.date())
+    if _attend_seen.get(guild.id) != key:
+        _attend_seen[guild.id] = key
+        await refresh_attend_board(guild)  # also moves the board below the ping
+
+
 class HistoryView(discord.ui.View):
     """One UTC day: donated, then not donated, 15 rows per page with Previous / Next buttons."""
 
@@ -276,6 +379,7 @@ class Bot(commands.Bot):
 
     async def setup_hook(self):
         self.add_view(PanelView())  # keeps the panel button working after a restart
+        self.add_view(AttendView())
         for key in DATA_SECTIONS:
             self.add_view(DataView(key))
         await self.tree.sync()
@@ -388,6 +492,7 @@ async def _boss_tick(guild, row, now):
     # the slot is claimed before sending, so a restart never double-pings
     if pick is not None and db.resolve_boss_poll(bot.db, guild.id, latest["cycle_start"],
                                                  times[pick].isoformat()):
+        db.add_boss(bot.db, guild.id, times[pick].isoformat())  # attendance opens at this time
         warn_if_role_not_pinged(await channel.send(boss.ping_text(role.mention, times[pick])), role.id)
         log.info("Boss ping for %s in guild %s, votes %s", times[pick].isoformat(), guild.id, votes)
 
@@ -407,6 +512,8 @@ async def tick():
                 continue
             if row["boss_channel_id"]:
                 await boss_tick(guild, row, now)
+            if row["attend_channel_id"]:
+                await attend_tick(guild, row, now)
             if row["board_day"] != today:
                 await refresh_board(guild)
                 db.save_guild(bot.db, guild.id, board_day=today)
@@ -441,6 +548,7 @@ async def before_tick():
     for guild in bot.guilds:  # brings the board and button back after a /stop or crash
         try:  # an error here would stop the loop from ever starting
             await refresh_board(guild)
+            await refresh_attend_board(guild)
         except Exception:
             log.exception("Startup board refresh failed for guild %s", guild.id)
 
@@ -718,6 +826,45 @@ async def data_stop(interaction: discord.Interaction):
 
 
 bot.tree.add_command(data_group)
+
+attend_group = app_commands.Group(name="attendance", description="Guild boss attendance board.", guild_only=True)
+
+
+@attend_group.command(name="start", description="Staff: post the boss attendance board in a channel.")
+async def attendance_start(interaction: discord.Interaction, channel: discord.TextChannel):
+    if not await require_staff(interaction):
+        return
+    old = db.get_guild(bot.db, interaction.guild_id)
+    if not old:
+        return await interaction.response.send_message("Run /setup first.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    try:
+        message = await channel.send(embed=discord.Embed(description="Loading attendance..."), view=AttendView())
+    except discord.HTTPException as e:
+        return await interaction.followup.send(
+            f"Could not post in {channel.mention}: {e}\nGive the bot View Channel, Send Messages "
+            "and Embed Links there, then run /attendance start again.", ephemeral=True)
+    old_channel = old["attend_message_id"] and interaction.guild.get_channel(old["attend_channel_id"] or 0)
+    if old_channel:  # remove the board from an earlier start, or it lingers and never updates
+        try:
+            await old_channel.get_partial_message(old["attend_message_id"]).delete()
+        except discord.HTTPException:
+            pass
+    db.save_guild(bot.db, interaction.guild_id, attend_channel_id=channel.id, attend_message_id=message.id)
+    await refresh_attend_board(interaction.guild)
+    await interaction.followup.send(f"Attendance board posted in {channel.mention}.", ephemeral=True)
+
+
+@attend_group.command(name="stop", description="Staff: stop the boss attendance board.")
+async def attendance_stop(interaction: discord.Interaction):
+    if not await require_staff(interaction):
+        return
+    db.save_guild(bot.db, interaction.guild_id, attend_channel_id=None)
+    await interaction.response.send_message("Attendance board stopped. Its messages stay as they are.",
+                                            ephemeral=True)
+
+
+bot.tree.add_command(attend_group)
 
 
 @setup.error
