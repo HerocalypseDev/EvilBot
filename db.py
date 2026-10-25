@@ -359,6 +359,11 @@ def void(conn, guild_id, submission_id, staff_id):
         ).rowcount == 1
 
 
+def get_submission(conn, guild_id, submission_id):
+    return conn.execute("SELECT * FROM submissions WHERE id = ? AND guild_id = ?",
+                        (submission_id, guild_id)).fetchone()
+
+
 def approved_for_day(conn, guild_id, day, limit=-1):
     """Approved donations for a day, newest first."""
     return conn.execute(

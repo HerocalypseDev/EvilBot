@@ -198,5 +198,8 @@ def test_log_all_skips_member_donated_and_unlinked():
     conn = conn_with((1, "Aa"), (2, "Bb"), (3, "Cc"), (4, None))
     db.record(conn, G, 2, "two", "Bb", DAY)  # already donated
     tracked = [(1, "one"), (2, "two"), (3, "three"), (4, "four")]
-    assert log_all(conn, G, tracked, DAY, 3, 99) == (["Aa"], ["four"])
+    logged, unlinked = log_all(conn, G, tracked, DAY, 3, 99)
+    assert ([ign for _, ign in logged], unlinked) == (["Aa"], ["four"])
+    assert db.get_submission(conn, G, logged[0][0])["logged_by"] == 99
+    assert log_all(conn, G, tracked, DAY, 3, 99)[0] == []  # a second run logs nobody twice
     assert not_donated(conn, G, tracked, DAY) == [(3, "Cc"), (4, "four (not linked)")]

@@ -396,6 +396,43 @@ async def attend_tick(guild, row, now):
         await refresh_attendance(guild)  # also moves the board below the ping
 
 
+class ConfirmView(discord.ui.View):
+    """Confirm / Cancel under a private preview of a big staff action. action(interaction) does it and
+    answers by editing the preview."""
+
+    def __init__(self, action):
+        super().__init__(timeout=120)
+        self.action = action
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction, button):
+        self.stop()
+        await self.action(interaction)
+        if not bot.is_closed():
+            await refresh_all(interaction.guild)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction, button):
+        self.stop()
+        await interaction.response.edit_message(content="Cancelled. Nothing was changed.", view=None)
+
+
+class UndoLogAllView(discord.ui.View):
+    """One Undo button under the /log_all result. It voids exactly the donations that run logged."""
+
+    def __init__(self, submission_ids):
+        super().__init__(timeout=900)  # ponytail: gone after 15 minutes or a restart; /undo by id still works
+        self.submission_ids = submission_ids
+
+    @discord.ui.button(label="Undo", style=discord.ButtonStyle.secondary)
+    async def undo(self, interaction, button):
+        self.stop()
+        voided = sum(db.void(bot.db, interaction.guild_id, i, interaction.user.id) for i in self.submission_ids)
+        await interaction.response.edit_message(content=f"Undid {voided} donation(s) from /log_all.", view=None)
+        await audit(interaction, f"undid {voided} donation(s) from /log_all.")
+        await refresh_all(interaction.guild)
+
+
 class HistoryView(discord.ui.View):
     """One UTC day: donated, then not donated, 15 rows per page with Previous / Next buttons.
     labels = (title, done, not done, not done field); also used for one boss's attendance."""
@@ -855,15 +892,25 @@ async def log_all(interaction: discord.Interaction, skip: discord.Member):
     if not row:
         return await interaction.response.send_message("Run /setup first.", ephemeral=True)
     date = db.today_utc()
-    logged, unlinked = board.log_all(bot.db, interaction.guild_id,
-                                     tracked_members(interaction.guild, row["member_role_id"]),
-                                     date, skip.id, interaction.user.id)
-    msg = f"Logged {DONATION_AMOUNT:,} for {len(logged)} member(s) on {date}. Skipped {skip.display_name}."
-    if unlinked:
-        msg += f"\nNot logged (no linked IGN): {board.join_capped(unlinked, 1500)}"
-    await interaction.response.send_message(msg, ephemeral=True)
-    await audit(interaction, f"logged donations for {len(logged)} member(s) on {date} with /log_all, "
-                             f"skipping {skip.mention}.")
+    tracked = tracked_members(interaction.guild, row["member_role_id"])
+    to_log, unlinked = board.log_all_plan(bot.db, interaction.guild_id, tracked, date, skip.id)
+    if not to_log:
+        return await interaction.response.send_message(
+            f"Nobody to log on {date}: every linked member but {skip.display_name} has already donated.", ephemeral=True)
+    not_linked = f"\nNot logged (no linked IGN): {board.join_capped(unlinked, 1000)}" if unlinked else ""
+
+    async def run(button_interaction):
+        logged, _ = board.log_all(bot.db, interaction.guild_id, tracked, date, skip.id, interaction.user.id)
+        await button_interaction.response.edit_message(
+            content=f"Logged {DONATION_AMOUNT:,} for {len(logged)} member(s) on {date}. Skipped "
+                    f"{skip.display_name}.{not_linked}\nPress Undo within 15 minutes to take them all back.",
+            view=UndoLogAllView([i for i, _ in logged]))
+        await audit(interaction, f"logged donations for {len(logged)} member(s) on {date} with /log_all, "
+                                 f"skipping {skip.mention}.")
+
+    await interaction.response.send_message(
+        f"Log {DONATION_AMOUNT:,} for **{len(to_log)}** member(s) on {date}, skipping {skip.display_name}?"
+        f"{not_linked}", view=ConfirmView(run), ephemeral=True)
 
 
 @bot.tree.command(description="Staff: cancel a donation by its id (see /export).")
@@ -871,11 +918,21 @@ async def log_all(interaction: discord.Interaction, skip: discord.Member):
 async def undo(interaction: discord.Interaction, submission_id: int):
     if not await require_staff(interaction):
         return
-    if db.void(bot.db, interaction.guild_id, submission_id, interaction.user.id):
-        await interaction.response.send_message(f"Voided donation #{submission_id}.", ephemeral=True)
-        await audit(interaction, f"voided donation #{submission_id}.")
-    else:
-        await interaction.response.send_message("That donation is not active.", ephemeral=True)
+    row = db.get_submission(bot.db, interaction.guild_id, submission_id)
+    if not row or row["status"] != "approved":
+        return await interaction.response.send_message("That donation is not active.", ephemeral=True)
+
+    async def run(button_interaction):
+        if db.void(bot.db, interaction.guild_id, submission_id, interaction.user.id):
+            await button_interaction.response.edit_message(content=f"Voided donation #{submission_id}.", view=None)
+            await audit(interaction, f"voided donation #{submission_id} (**{discord.utils.escape_markdown(row['ign'])}**"
+                                     f", {row['day_utc']}).")
+        else:
+            await button_interaction.response.edit_message(content="That donation is not active.", view=None)
+
+    await interaction.response.send_message(
+        f"Void donation #{submission_id} for **{discord.utils.escape_markdown(row['ign'])}** on {row['day_utc']}?",
+        view=ConfirmView(run), ephemeral=True)
 
 
 @bot.tree.command(description="Staff: post the offline notice and shut the bot down.")
@@ -883,10 +940,16 @@ async def undo(interaction: discord.Interaction, submission_id: int):
 async def stop(interaction: discord.Interaction):
     if not await require_staff(interaction):
         return
-    await interaction.response.send_message("Stopping. Start the bot again to bring the button back.",
-                                            ephemeral=True)
-    await audit(interaction, "stopped the bot with /stop.")
-    await bot.close()
+
+    async def run(button_interaction):
+        await button_interaction.response.edit_message(
+            content="Stopping. Start the bot again to bring the button back.", view=None)
+        await audit(interaction, "stopped the bot with /stop.")
+        await bot.close()
+
+    await interaction.response.send_message(
+        "Stop the bot? Members cannot log donations or attendance until someone starts it again on the server.",
+        view=ConfirmView(run), ephemeral=True)
 
 
 @bot.tree.command(name="backup", description="Staff: download a full copy of the bot's database.")

@@ -67,19 +67,30 @@ def not_donated(conn, guild_id, tracked, day):
     return [(i, igns.get(i) or f"{name} (not linked)") for i, name in tracked if i not in donated]
 
 
-def log_all(conn, guild_id, tracked, day, skip_id, staff_id):
-    """Log `day` for every tracked member without a donation, except skip_id. Returns (logged igns,
-    names skipped for having no link)."""
+def log_all_plan(conn, guild_id, tracked, day, skip_id):
+    """Who /log_all would log: tracked members without a donation on `day`, except skip_id.
+    Returns ([(discord_id, display name, ign)], names left out for having no link)."""
     igns, names = db.get_igns(conn, guild_id), dict(tracked)
-    logged, unlinked = [], []
+    to_log, unlinked = [], []
     for i, _ in not_donated(conn, guild_id, tracked, day):
         if i == skip_id:
             continue
         if i not in igns:
             unlinked.append(names[i])
             continue
-        db.record(conn, guild_id, i, names[i], igns[i], day, logged_by=staff_id)
-        logged.append(igns[i])
+        to_log.append((i, names[i], igns[i]))
+    return to_log, unlinked
+
+
+def log_all(conn, guild_id, tracked, day, skip_id, staff_id):
+    """Run log_all_plan. Returns ([(submission id, ign)] logged, names left out for having no link)."""
+    to_log, unlinked = log_all_plan(conn, guild_id, tracked, day, skip_id)
+    logged = []
+    for i, name, ign in to_log:
+        try:
+            logged.append((db.record(conn, guild_id, i, name, ign, day, logged_by=staff_id), ign))
+        except db.AlreadyDonated:  # donated between the preview and the confirm
+            pass
     return logged, unlinked
 
 
