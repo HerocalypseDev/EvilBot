@@ -510,27 +510,18 @@ class Bot(commands.Bot):
                                            f"left the server and was unlinked from **{discord.utils.escape_markdown(ign)}**.")
             await refresh_all(member.guild)
 
-    async def on_member_update(self, before, after):
-        """Welcome DM when a member gets the guild member role."""
-        row = db.get_guild(self.db, after.guild.id)
-        if not row or before.get_role(row["member_role_id"]) or not after.get_role(row["member_role_id"]):
+    async def on_member_join(self, member):
+        """Ping each new person in the welcome channel and ask for their gear, playtime and level."""
+        row = db.get_guild(self.db, member.guild.id)
+        channel = row and row["welcome_channel_id"] and member.guild.get_channel(row["welcome_channel_id"])
+        if not channel or member.bot:
             return
-        panel = after.guild.get_channel(row["panel_channel_id"])
-        attend = row["attend_channel_id"] and after.guild.get_channel(row["attend_channel_id"])
-        lines = [f"Welcome to **{after.guild.name}**. This bot tracks guild donations and guild boss attendance.",
-                 "",
-                 "**1. Get linked.** Run /link_request in the server and pick your in-game name. Staff approve it.",
-                 f"**2. Donate every day.** After you donate {DONATION_AMOUNT:,} coins in the game, press "
-                 f"**Log donation** in {panel.mention if panel else 'the donation channel'}. The day resets at "
-                 "00:00 UTC.",
-                 "**3. Guild boss.** Vote for a time in the boss poll, then press **I attended** in "
-                 f"{attend.mention if attend else 'the attendance channel'} after you join.",
-                 "",
-                 "Run /me any time to see your streak and rank, and /help for every command."]
         try:
-            await after.send("\n".join(lines))
-        except discord.HTTPException:  # DMs closed
-            pass
+            await channel.send(f"Welcome {member.mention}. To join the guild, post screenshots of:\n"
+                               "1. Your gear\n2. Your playtime\n3. Your level",
+                               allowed_mentions=discord.AllowedMentions(users=[member]))
+        except discord.HTTPException as e:
+            log.warning("Welcome message failed in guild %s: %s", member.guild.id, e)
 
     async def on_app_command_completion(self, interaction, command):
         if interaction.guild and not self.is_closed():  # /stop closes the bot inside the command
@@ -1522,6 +1513,39 @@ async def staff_stop(interaction: discord.Interaction):
 
 bot.tree.add_command(staff_group)
 
+welcome_group = app_commands.Group(name="welcome", description="Greet new people and ask for their gear.",
+                                   guild_only=True)
+
+
+@welcome_group.command(name="start", description="Staff: ping each new person in a channel, asking for gear, "
+                                                 "playtime and level screenshots.")
+async def welcome_start(interaction: discord.Interaction, channel: discord.TextChannel):
+    if not await require_staff(interaction):
+        return
+    if not db.get_guild(bot.db, interaction.guild_id):
+        return await interaction.response.send_message("Run /setup first.", ephemeral=True)
+    perms = channel.permissions_for(interaction.guild.me)
+    if not (perms.view_channel and perms.send_messages):
+        return await interaction.response.send_message(
+            f"I cannot post in {channel.mention}. Give the bot View Channel and Send Messages there, then run "
+            "/welcome start again.", ephemeral=True)
+    db.save_guild(bot.db, interaction.guild_id, welcome_channel_id=channel.id)
+    await interaction.response.send_message(
+        f"New people get pinged in {channel.mention}. Make sure they can see and post in it.", ephemeral=True)
+    await audit(interaction, f"set the welcome channel to {channel.mention}.")
+
+
+@welcome_group.command(name="stop", description="Staff: stop greeting new people.")
+async def welcome_stop(interaction: discord.Interaction):
+    if not await require_staff(interaction):
+        return
+    db.save_guild(bot.db, interaction.guild_id, welcome_channel_id=None)
+    await interaction.response.send_message("Welcome messages stopped.", ephemeral=True)
+    await audit(interaction, "stopped the welcome messages.")
+
+
+bot.tree.add_command(welcome_group)
+
 
 def parse_day(date):
     """YYYY-MM-DD, default today (UTC). Raises ValueError."""
@@ -1785,7 +1809,8 @@ async def dashboard(interaction: discord.Interaction):
         embed.add_field(name=f"Missed the last {checked} bosses", value=f"**{len(missed)}** members")
     channels = [("Panel", row["panel_channel_id"]), ("Boss polls", row["boss_channel_id"]),
              ("Attendance", row["attend_channel_id"]), ("Data", row["data_channel_id"]),
-             ("Attendance data", row["attend_data_channel_id"]), ("Staff", row["staff_channel_id"])]
+             ("Attendance data", row["attend_data_channel_id"]), ("Staff", row["staff_channel_id"]),
+             ("Welcome", row["welcome_channel_id"])]
     embed.add_field(name="Channels", inline=False, value="\n".join(
         f"{name}: {f'<#{cid}>' if cid else 'not set'}" for name, cid in channels))
     await interaction.response.send_message(embed=brand(embed, guild, f"Version {VERSION}"), view=DashboardView(),

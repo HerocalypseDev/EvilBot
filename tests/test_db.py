@@ -142,6 +142,6 @@ def test_connect_adds_new_columns_to_an_old_database(tmp_path):
     old.commit()
     old.close()
     conn = db.connect(tmp_path / "old.db")
-    db.save_guild(conn, 1, staff_channel_id=9)
+    db.save_guild(conn, 1, staff_channel_id=9, welcome_channel_id=8)
     row = db.get_guild(conn, 1)
     assert (row["panel_channel_id"], row["staff_channel_id"]) == (5, 9)
