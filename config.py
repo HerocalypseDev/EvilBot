@@ -14,3 +14,4 @@ if not all(5 <= m <= 1435 for m in REMINDER_MINUTES):
     raise SystemExit("REMINDER_MINUTES values must be from 5 to 1435.")
 BACKUP_HOUR_UTC = 4
 IGN_MIN, IGN_MAX = 2, 32
+VERSION = "2.0.0"  # bump on each upload, so /help and the startup log show which code is live

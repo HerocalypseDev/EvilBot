@@ -20,7 +20,7 @@ import boss
 import db
 import reminders
 from config import (BACKUP_HOUR_UTC, DATA_PAGE, DONATION_AMOUNT, IGN_MAX, IGN_MIN, MEMBER_ROLE_NAME,
-                    RECENT_DONORS, REMINDER_MINUTES)
+                    RECENT_DONORS, REMINDER_MINUTES, VERSION)
 
 log = logging.getLogger("evil")
 
@@ -433,6 +433,7 @@ class Bot(commands.Bot):
         for key in [*DATA_SECTIONS, *ATTEND_SECTIONS]:
             self.add_view(DataView(key))
         await self.tree.sync()
+        log.info("Evil Donations v%s starting", VERSION)
         tick.start()
 
     async def close(self):
@@ -823,6 +824,18 @@ async def stop(interaction: discord.Interaction):
     await interaction.response.send_message("Stopping. Start the bot again to bring the button back.",
                                             ephemeral=True)
     await bot.close()
+
+
+@bot.tree.command(name="backup", description="Staff: download a full copy of the bot's database.")
+@app_commands.guild_only()
+async def backup_db(interaction: discord.Interaction):
+    if not await require_staff(interaction):
+        return
+    data = bot.db.serialize()  # consistent snapshot, even while the bot writes
+    name = f"donations-{datetime.now(timezone.utc):%Y-%m-%d-%H%M}.db"
+    await interaction.response.send_message(
+        "Full database copy. To restore it, upload it to the server as `donations.db`, with the bot stopped.",
+        file=discord.File(io.BytesIO(data), name), ephemeral=True)
 
 
 @bot.tree.command(description="Staff: download all donations as a CSV file.")
