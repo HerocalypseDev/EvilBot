@@ -138,3 +138,18 @@ def attend_data_sections(conn, guild_id, tracked, now):
         "not_attended": [(name, ign) for i, name, ign in linked if i not in attended_ids] if row else [],
         "today_totals": [(ign, f"{counts.get(i, 0)}/{total}") for i, _, ign in linked],
     }
+
+
+def boss_lists(conn, guild_id, tracked, boss_id):
+    """day_lists for one boss: (attended as (discord name, in-game name, unix time), not attended as board names)."""
+    attended = [(r["discord_name"], r["ign"], int(datetime.fromisoformat(r["created_at"]).timestamp()))
+                for r in db.attendance_for_boss(conn, boss_id)]
+    return attended, [name for _, name in not_attended(conn, guild_id, tracked, boss_id)]
+
+
+def member_day(conn, guild_id, discord_id, day, now):
+    """Bosses started on `day` by `now`, as [(unix time, attended)]."""
+    now_text = now.isoformat(timespec="seconds")
+    return [(int(datetime.fromisoformat(b["boss_time"]).timestamp()),
+             any(r["discord_id"] == discord_id for r in db.attendance_for_boss(conn, b["id"])))
+            for b in db.bosses_for_day(conn, guild_id, day) if b["boss_time"] <= now_text]

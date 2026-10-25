@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 import db
-from board import attend_board_data, attend_data_sections, board_data, data_sections, day_lists, join_capped, short, next_reset_ts, not_donated, paginate
+from board import attend_board_data, attend_data_sections, board_data, boss_lists, member_day, data_sections, day_lists, join_capped, short, next_reset_ts, not_donated, paginate
 
 G, DAY, YDAY = 1, "2026-10-22", "2026-10-21"
 
@@ -148,3 +148,17 @@ def test_attend_data_sections():
     assert info == (eight, eight + 3600, "open")
     assert sections["attended"] == [] and sections["not_attended"] == [("a", "ann"), ("b", "Bob")]
     assert sections["today_totals"] == [("ann", "0/2"), ("Bob", "1/2")]
+
+
+def test_boss_lists_and_member_day():
+    conn = conn_with((1, "Ann"))
+    for hour in (2, 8, 14):
+        db.add_boss(conn, G, f"2026-10-22T{hour:02}:00:00+00:00")
+    first = db.get_boss(conn, G, "2026-10-22T02:00:00+00:00")["id"]
+    db.attend(conn, first, 1, "a", "Ann")
+    attended, waiting = boss_lists(conn, G, [(1, "a"), (2, "Bo")], first)
+    assert [row[:2] for row in attended] == [("a", "Ann")] and waiting == ["Bo (not linked)"]
+    two = int(datetime(2026, 10, 22, 2, tzinfo=timezone.utc).timestamp())
+    now = datetime(2026, 10, 22, 9, tzinfo=timezone.utc)  # 14:00 not started yet
+    assert member_day(conn, G, 1, DAY, now) == [(two, True), (two + 6 * 3600, False)]
+    assert member_day(conn, G, 1, YDAY, now) == []

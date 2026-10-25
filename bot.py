@@ -376,11 +376,12 @@ async def attend_tick(guild, row, now):
 
 
 class HistoryView(discord.ui.View):
-    """One UTC day: donated, then not donated, 15 rows per page with Previous / Next buttons."""
+    """One UTC day: donated, then not donated, 15 rows per page with Previous / Next buttons.
+    labels = (title, done, not done, not done field); also used for one boss's attendance."""
 
-    def __init__(self, day, donated, waiting):
+    def __init__(self, labels, donated, waiting):
         super().__init__(timeout=300)
-        self.day, self.page = day, 0
+        self.labels, self.page = labels, 0
         self.rows = ([("donated", f"{board.short(n)} · {board.short(i)} · <t:{t}:t>") for n, i, t in donated]
                      + [("waiting", discord.utils.escape_markdown(n)) for n in waiting])
         self.counts = (len(donated), len(waiting))
@@ -390,12 +391,13 @@ class HistoryView(discord.ui.View):
         chunk, self.page, pages = board.paginate(self.rows, self.page, DATA_PAGE)  # also clamps self.page
         donated = [text for kind, text in chunk if kind == "donated"]
         waiting = [text for kind, text in chunk if kind == "waiting"]
-        embed = discord.Embed(title=f"Donations {self.day} (UTC)",
-                              description=f"Donated: **{self.counts[0]}** · Not donated: **{self.counts[1]}**")
+        title, done, not_done, not_done_field = self.labels
+        embed = discord.Embed(title=title,
+                              description=f"{done}: **{self.counts[0]}** · {not_done}: **{self.counts[1]}**")
         if donated:
-            embed.add_field(name=f"Donated ({self.counts[0]})", value="\n".join(donated), inline=False)
+            embed.add_field(name=f"{done} ({self.counts[0]})", value="\n".join(donated), inline=False)
         if waiting:
-            embed.add_field(name=f"Not donated yet ({self.counts[1]})", value="\n".join(waiting), inline=False)
+            embed.add_field(name=f"{not_done_field} ({self.counts[1]})", value="\n".join(waiting), inline=False)
         embed.set_footer(text=f"Page {self.page + 1}/{pages}")
         return embed
 
@@ -755,7 +757,7 @@ async def history(interaction: discord.Interaction, date: str | None = None):
         return await interaction.response.send_message("Run /setup first.", ephemeral=True)
     donated, waiting = board.day_lists(bot.db, interaction.guild_id,
                                        tracked_members(interaction.guild, row["member_role_id"]), day)
-    view = HistoryView(day, donated, waiting)
+    view = HistoryView((f"Donations {day} (UTC)", "Donated", "Not donated", "Not donated yet"), donated, waiting)
     await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
 
 
@@ -944,6 +946,80 @@ async def attendance_data_stop(interaction: discord.Interaction):
 
 
 bot.tree.add_command(attend_data_group)
+
+
+def parse_day(date):
+    """YYYY-MM-DD, default today (UTC). Raises ValueError."""
+    return datetime.strptime(date, "%Y-%m-%d").date().isoformat() if date else db.today_utc()
+
+
+BAD_DATE = "Use the date as YYYY-MM-DD, e.g. 2026-10-21."
+
+
+async def boss_autocomplete(interaction: discord.Interaction, current: str):
+    """Bosses that started on the day typed in `date` (default today), as '14:00 UTC'."""
+    try:
+        day = parse_day(interaction.namespace.date)
+    except ValueError:
+        return []
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    times = [b["boss_time"] for b in db.bosses_for_day(bot.db, interaction.guild_id, day) if b["boss_time"] <= now]
+    return [app_commands.Choice(name=f"{t[11:16]} UTC", value=t) for t in times if current in t[11:16]][:25]
+
+
+def find_boss(guild_id, day, boss_time):
+    """The chosen boss of that day, or the day's latest boss that has started. None if there is none."""
+    if boss_time:
+        row = db.get_boss(bot.db, guild_id, boss_time)
+        return row if row and row["day_utc"] == day else None
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    started = [b for b in db.bosses_for_day(bot.db, guild_id, day) if b["boss_time"] <= now]
+    return started[-1] if started else None
+
+
+@bot.tree.command(name="boss_attendance", description="Staff: show who attended a guild boss and who did not.")
+@app_commands.guild_only()
+@app_commands.describe(date="Day as YYYY-MM-DD. Default: today (UTC).",
+                       boss="Boss time. Default: the day's latest boss.")
+@app_commands.autocomplete(boss=boss_autocomplete)
+async def boss_attendance(interaction: discord.Interaction, date: str | None = None, boss: str | None = None):
+    if not await require_staff(interaction):
+        return
+    try:
+        day = parse_day(date)
+    except ValueError:
+        return await interaction.response.send_message(BAD_DATE, ephemeral=True)
+    row = db.get_guild(bot.db, interaction.guild_id)
+    if not row:
+        return await interaction.response.send_message("Run /setup first.", ephemeral=True)
+    found = find_boss(interaction.guild_id, day, boss)
+    if not found:
+        return await interaction.response.send_message(f"No guild boss found on {day}.", ephemeral=True)
+    attended, waiting = board.boss_lists(bot.db, interaction.guild_id,
+                                         tracked_members(interaction.guild, row["member_role_id"]), found["id"])
+    labels = (f"Guild boss {day} {found['boss_time'][11:16]} UTC", "Attended", "Not attended", "Not attended")
+    view = HistoryView(labels, attended, waiting)
+    await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+
+
+@bot.tree.command(name="boss_member", description="Staff: how many guild bosses a member attended on a day.")
+@app_commands.guild_only()
+@app_commands.describe(date="Day as YYYY-MM-DD. Default: today (UTC).")
+async def boss_member(interaction: discord.Interaction, member: discord.Member, date: str | None = None):
+    if not await require_staff(interaction):
+        return
+    try:
+        day = parse_day(date)
+    except ValueError:
+        return await interaction.response.send_message(BAD_DATE, ephemeral=True)
+    ign = db.get_ign(bot.db, interaction.guild_id, member.id)
+    if not ign:
+        return await interaction.response.send_message("Member has no linked IGN.", ephemeral=True)
+    bosses = board.member_day(bot.db, interaction.guild_id, member.id, day, datetime.now(timezone.utc))
+    lines = [f"**{discord.utils.escape_markdown(ign)}**: {sum(a for _, a in bosses)} of {len(bosses)} "
+             f"guild bosses on {day} (UTC)"]
+    lines += [f"<t:{ts}:t> · {'attended' if attended else 'missed'}" for ts, attended in bosses]
+    await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
 
 @setup.error
