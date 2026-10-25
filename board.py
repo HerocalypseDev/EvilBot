@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timedelta, timezone
 
 from discord.utils import escape_markdown
@@ -65,6 +66,16 @@ def not_donated(conn, guild_id, tracked, day):
     donated = {r["discord_id"] for r in db.approved_for_day(conn, guild_id, day)}
     igns = db.get_igns(conn, guild_id)
     return [(i, igns.get(i) or f"{name} (not linked)") for i, name in tracked if i not in donated]
+
+
+def member_ids(text):
+    """Discord ids from @mentions or pasted ids, in order, no repeats."""
+    ids = []
+    for mention, raw in re.findall(r"<@!?(\d{15,20})>|\b(\d{15,20})\b", text):
+        i = int(mention or raw)
+        if i not in ids:
+            ids.append(i)
+    return ids
 
 
 def log_all_plan(conn, guild_id, tracked, day, skip_id):

@@ -882,6 +882,45 @@ async def log_donation(interaction: discord.Interaction, member: discord.Member,
     await audit(interaction, f"logged a donation for {member.mention} on {date}.")
 
 
+@bot.tree.command(name="log_many", description="Staff: log a donation for several members at once.")
+@app_commands.guild_only()
+@app_commands.describe(members="@mention every member, e.g. @Ann @Bob @Cid", day="Default: today (UTC)")
+@app_commands.choices(day=[app_commands.Choice(name="today", value="today"),
+                           app_commands.Choice(name="yesterday", value="yesterday")])
+async def log_many(interaction: discord.Interaction, members: str, day: app_commands.Choice[str] | None = None):
+    if not await require_staff(interaction):
+        return
+    ids = board.member_ids(members)
+    if not ids:
+        return await interaction.response.send_message("@mention the members to log, e.g. @Ann @Bob.", ephemeral=True)
+    date = db.yesterday_utc() if day and day.value == "yesterday" else db.today_utc()
+    logged, already, unlinked = [], [], []
+    for i in ids:
+        member = interaction.guild.get_member(i)
+        name = member.display_name if member else str(i)
+        ign = db.get_ign(bot.db, interaction.guild_id, i)
+        if not ign:
+            unlinked.append(name)
+            continue
+        try:
+            db.record(bot.db, interaction.guild_id, i, name, ign, date, logged_by=interaction.user.id)
+            logged.append(ign)
+        except db.AlreadyDonated:
+            already.append(ign)
+    esc = discord.utils.escape_markdown
+    lines = [f"Logged {DONATION_AMOUNT:,} for {len(logged)} member(s) on {date}."]
+    if logged:
+        lines.append(f"Logged: {board.join_capped([esc(n) for n in logged], 500)}")
+    if already:
+        lines.append(f"Already donated that day: {board.join_capped([esc(n) for n in already], 500)}")
+    if unlinked:
+        lines.append(f"Not logged (no linked IGN): {board.join_capped([esc(n) for n in unlinked], 500)}")
+    await interaction.response.send_message("\n".join(lines), ephemeral=True)
+    if logged:
+        await audit(interaction, f"logged donations for {len(logged)} member(s) on {date} with /log_many: "
+                                 f"{board.join_capped([esc(n) for n in logged], 1500)}.")
+
+
 @bot.tree.command(name="log_all", description="Staff: log today's donation for every linked member but one.")
 @app_commands.guild_only()
 @app_commands.describe(skip="The member who did not donate today")

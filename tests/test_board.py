@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import db
 from board import (attend_board_data, attend_data_sections, attend_report, board_data, boss_lists, member_day,
-                   data_sections, day_lists, join_capped, link_lines, log_all, missed_in_row, next_reset_ts, not_donated,
+                   data_sections, day_lists, join_capped, link_lines, log_all, member_ids, missed_in_row, next_reset_ts, not_donated,
                    pack_lines, paginate, short)
 
 G, DAY, YDAY = 1, "2026-10-22", "2026-10-21"
@@ -203,3 +203,8 @@ def test_log_all_skips_member_donated_and_unlinked():
     assert db.get_submission(conn, G, logged[0][0])["logged_by"] == 99
     assert log_all(conn, G, tracked, DAY, 3, 99)[0] == []  # a second run logs nobody twice
     assert not_donated(conn, G, tracked, DAY) == [(3, "Cc"), (4, "four (not linked)")]
+
+
+def test_member_ids_reads_mentions_and_ids_once():
+    text = "<@111111111111111111> <@!222222222222222222>, 333333333333333333 <@111111111111111111> 42"
+    assert member_ids(text) == [111111111111111111, 222222222222222222, 333333333333333333]
