@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import db
 from board import (attend_board_data, attend_data_sections, attend_report, board_data, boss_lists, member_day,
-                   data_sections, day_lists, join_capped, link_lines, missed_in_row, next_reset_ts, not_donated,
+                   data_sections, day_lists, join_capped, link_lines, log_all, missed_in_row, next_reset_ts, not_donated,
                    pack_lines, paginate, short)
 
 G, DAY, YDAY = 1, "2026-10-22", "2026-10-21"
@@ -192,3 +192,11 @@ def test_link_lines():
 def test_pack_lines():
     assert pack_lines(["a" * 10] * 35, limit=2000) == ["\n".join(["a" * 10] * 35)]  # fits: one message
     assert pack_lines(["aaaa", "bbbb", "cc"], limit=9) == ["aaaa\nbbbb", "cc"]
+
+
+def test_log_all_skips_member_donated_and_unlinked():
+    conn = conn_with((1, "Aa"), (2, "Bb"), (3, "Cc"), (4, None))
+    db.record(conn, G, 2, "two", "Bb", DAY)  # already donated
+    tracked = [(1, "one"), (2, "two"), (3, "three"), (4, "four")]
+    assert log_all(conn, G, tracked, DAY, 3, 99) == (["Aa"], ["four"])
+    assert not_donated(conn, G, tracked, DAY) == [(3, "Cc"), (4, "four (not linked)")]

@@ -62,6 +62,22 @@ def not_donated(conn, guild_id, tracked, day):
     return [(i, igns.get(i) or f"{name} (not linked)") for i, name in tracked if i not in donated]
 
 
+def log_all(conn, guild_id, tracked, day, skip_id, staff_id):
+    """Log `day` for every tracked member without a donation, except skip_id. Returns (logged igns,
+    names skipped for having no link)."""
+    igns, names = db.get_igns(conn, guild_id), dict(tracked)
+    logged, unlinked = [], []
+    for i, _ in not_donated(conn, guild_id, tracked, day):
+        if i == skip_id:
+            continue
+        if i not in igns:
+            unlinked.append(names[i])
+            continue
+        db.record(conn, guild_id, i, names[i], igns[i], day, logged_by=staff_id)
+        logged.append(igns[i])
+    return logged, unlinked
+
+
 def data_sections(conn, guild_id, tracked, today):
     """Lists for the data channel. tracked = [(discord_id, display_name)].
     donated: (discord name, in-game name, unix time), newest first.

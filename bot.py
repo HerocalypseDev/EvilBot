@@ -783,6 +783,26 @@ async def log_donation(interaction: discord.Interaction, member: discord.Member,
     await refresh_board(interaction.guild)
 
 
+@bot.tree.command(name="log_all", description="Staff: log today's donation for every linked member but one.")
+@app_commands.guild_only()
+@app_commands.describe(skip="The member who did not donate today")
+async def log_all(interaction: discord.Interaction, skip: discord.Member):
+    if not await require_staff(interaction):
+        return
+    row = db.get_guild(bot.db, interaction.guild_id)
+    if not row:
+        return await interaction.response.send_message("Run /setup first.", ephemeral=True)
+    date = db.today_utc()
+    logged, unlinked = board.log_all(bot.db, interaction.guild_id,
+                                     tracked_members(interaction.guild, row["member_role_id"]),
+                                     date, skip.id, interaction.user.id)
+    msg = f"Logged {DONATION_AMOUNT:,} for {len(logged)} member(s) on {date}. Skipped {skip.display_name}."
+    if unlinked:
+        msg += f"\nNot logged (no linked IGN): {board.join_capped(unlinked, 1500)}"
+    await interaction.response.send_message(msg, ephemeral=True)
+    await refresh_board(interaction.guild)
+
+
 @bot.tree.command(description="Staff: cancel a donation by its id (see /export).")
 @app_commands.guild_only()
 async def undo(interaction: discord.Interaction, submission_id: int):
