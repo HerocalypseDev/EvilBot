@@ -931,19 +931,63 @@ async def roster_remove_autocomplete(interaction: discord.Interaction, current: 
     return [app_commands.Choice(name=n, value=n) for n in names]
 
 
-@roster_group.command(name="list", description="Staff: show the names and which are taken.")
-async def roster_list(interaction: discord.Interaction):
+class ListView(discord.ui.View):
+    """A private list, DATA_PAGE lines per page, with Previous / Next buttons."""
+
+    def __init__(self, title, description, lines):
+        super().__init__(timeout=300)
+        self.title, self.description, self.lines, self.page = title, description, lines, 0
+        self._update_buttons()
+
+    def embed(self):
+        chunk, self.page, pages = board.paginate(self.lines, self.page, DATA_PAGE)
+        embed = discord.Embed(title=self.title, description=self.description + "\n\n" + "\n".join(chunk))
+        return brand(embed, footer=f"Page {self.page + 1}/{pages}")
+
+    def _update_buttons(self):
+        pages = board.paginate(self.lines, self.page, DATA_PAGE)[2]
+        self.previous.disabled = self.page <= 0
+        self.next.disabled = self.page >= pages - 1
+
+    async def _show(self, interaction):
+        embed = self.embed()
+        self._update_buttons()
+        await interaction.response.edit_message(embed=embed, view=self)
+        await refresh_all(interaction.guild)
+
+    @discord.ui.button(label="Previous")
+    async def previous(self, interaction, button):
+        self.page -= 1
+        await self._show(interaction)
+
+    @discord.ui.button(label="Next")
+    async def next(self, interaction, button):
+        self.page += 1
+        await self._show(interaction)
+
+
+@roster_group.command(name="list", description="Staff: show the roster names, who took each, and which are free.")
+@app_commands.describe(search="Only names containing this text", show="Default: all names")
+@app_commands.choices(show=[app_commands.Choice(name="all", value="all"), app_commands.Choice(name="free", value="free"),
+                            app_commands.Choice(name="taken", value="taken")])
+async def roster_list(interaction: discord.Interaction, search: str | None = None,
+                      show: app_commands.Choice[str] | None = None):
     if not await require_staff(interaction):
         return
-    names = db.roster_names(bot.db, interaction.guild_id)
-    free = set(db.roster_names(bot.db, interaction.guild_id, only_free=True))
-    text = "\n".join(n if n in free else f"{n} (taken)" for n in names)
-    header = f"{len(names)} names, {len(free)} still free."
-    if len(text) + len(header) > 1800:  # too long for a message: send as a file
-        file = discord.File(io.BytesIO(text.encode("utf-8")), "roster.txt")
-        return await interaction.response.send_message(header, file=file, ephemeral=True)
-    await interaction.response.send_message(f"{header}\n{text}" if names else "The list is empty.",
-                                            ephemeral=True)
+    names = db.roster_names(bot.db, interaction.guild_id, search or "")
+    owners = {ign.lower(): i for i, ign in db.get_igns(bot.db, interaction.guild_id).items()}
+    which = show.value if show else "all"
+    lines = [f"**{discord.utils.escape_markdown(n)}** · " + (f"taken by <@{owners[n.lower()]}>" if n.lower() in owners
+                                                             else "free")
+             for n in names if which == "all" or (n.lower() in owners) == (which == "taken")]
+    free = sum(n.lower() not in owners for n in names)
+    if not lines:
+        return await interaction.response.send_message("No roster names match." if names or search
+                                                       else "The list is empty.", ephemeral=True)
+    found = f" matching '{discord.utils.escape_markdown(search)}'" if search else ""
+    view = ListView(f"Roster ({len(lines)})", f"{len(names)} names{found}: {len(names) - free} taken, {free} free.",
+                    lines)
+    await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
 
 
 bot.tree.add_command(roster_group)
