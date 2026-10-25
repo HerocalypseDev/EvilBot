@@ -702,8 +702,8 @@ async def linked(interaction: discord.Interaction):
     none = discord.AllowedMentions.none()  # show the names without pinging anyone
     messages = board.pack_lines([f"**Linked members ({len(lines)})**\n", *lines])
     await interaction.response.send_message(messages[0], allowed_mentions=none)
-    for text in messages[1:]:
-        await interaction.followup.send(text, allowed_mentions=none)
+    for text in messages[1:]:  # plain channel messages: a followup would show as a reply to the first
+        await interaction.channel.send(text, allowed_mentions=none)
 
 
 @bot.tree.command(description="Remove a link. Staff can unlink other members.")
