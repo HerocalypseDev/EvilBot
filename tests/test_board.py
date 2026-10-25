@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 import db
-from board import (attend_board_data, attend_data_sections, attend_report, board_data, boss_lists, member_day,
+from board import (attend_board_data, best_streak, member_card, streak, top_streaks, attend_data_sections, attend_report, board_data, boss_lists, member_day,
                    data_sections, day_lists, join_capped, link_lines, log_all, member_ids, missed_in_row, next_reset_ts, not_donated,
                    pack_lines, paginate, short)
 
@@ -208,3 +208,19 @@ def test_log_all_skips_member_donated_and_unlinked():
 def test_member_ids_reads_mentions_and_ids_once():
     text = "<@111111111111111111> <@!222222222222222222>, 333333333333333333 <@111111111111111111> 42"
     assert member_ids(text) == [111111111111111111, 222222222222222222, 333333333333333333]
+
+
+def test_streaks_and_card():
+    days = {"2026-10-20", "2026-10-21", "2026-10-22", "2026-10-15", "2026-10-16", "2026-10-17", "2026-10-18"}
+    assert streak(days, "2026-10-22") == 3
+    assert streak(days, "2026-10-23") == 3  # today not logged yet: the streak still stands
+    assert streak(days, "2026-10-24") == 0
+    assert best_streak(days) == 4
+    conn = conn_with((1, "Aa"), (2, "Bb"))
+    for d in ("2026-10-20", "2026-10-21", "2026-10-22"):
+        db.record(conn, G, 1, "one", "Aa", d)
+    db.record(conn, G, 2, "two", "Bb", "2026-10-22")
+    tracked = [(1, "one"), (2, "two")]
+    assert top_streaks(conn, G, tracked, DAY) == [("Aa", 3)]
+    card = member_card(conn, G, tracked, 2, DAY)
+    assert (card["today"], card["streak"], card["month_days"], card["rank"], card["members"]) == (True, 1, 1, 2, 2)

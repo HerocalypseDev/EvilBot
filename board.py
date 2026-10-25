@@ -1,5 +1,5 @@
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from discord.utils import escape_markdown
 
@@ -58,6 +58,56 @@ def next_reset_ts(now=None):
     now = now or datetime.now(timezone.utc)
     midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     return int(midnight.timestamp())
+
+
+def streak(days, today):
+    """Days in a row with a donation, up to today. A streak still counts while today is not logged yet."""
+    d = date.fromisoformat(today)
+    if today not in days:
+        d -= timedelta(days=1)
+    n = 0
+    while d.isoformat() in days:
+        n += 1
+        d -= timedelta(days=1)
+    return n
+
+
+def best_streak(days):
+    best = run = 0
+    prev = None
+    for d in sorted(date.fromisoformat(x) for x in days):
+        run = run + 1 if prev and d - prev == timedelta(days=1) else 1
+        best, prev = max(best, run), d
+    return best
+
+
+def badge(n):
+    """Badge for a streak of n days, or None."""
+    return "30-day streak" if n >= 30 else "7-day streak" if n >= 7 else None
+
+
+def top_streaks(conn, guild_id, tracked, today, count=5):
+    """Linked members with the longest running streaks (2 days or more): [(in-game name, days)]."""
+    igns, days = db.get_igns(conn, guild_id), db.donation_days(conn, guild_id)
+    rows = [(igns[i], streak(days.get(i, set()), today)) for i, _ in tracked if i in igns]
+    return sorted((r for r in rows if r[1] >= 2), key=lambda r: (-r[1], r[0].lower()))[:count]
+
+
+def member_card(conn, guild_id, tracked, discord_id, today):
+    """Numbers for /me: today, streaks, this month and the member's rank this month among tracked members."""
+    days = db.donation_days(conn, guild_id)
+    mine = days.get(discord_id, set())
+    month = today[:7]
+    counts = {i: sum(d.startswith(month) for d in days.get(i, set())) for i, _ in tracked}
+    counts.setdefault(discord_id, sum(d.startswith(month) for d in mine))
+    return {
+        "today": today in mine,
+        "streak": streak(mine, today),
+        "best": best_streak(mine),
+        "month_days": counts[discord_id],
+        "rank": 1 + sum(c > counts[discord_id] for c in counts.values()),
+        "members": len(counts),
+    }
 
 
 def not_donated(conn, guild_id, tracked, day):
@@ -142,6 +192,7 @@ def board_data(conn, guild_id, tracked, today, yesterday, now=None):
         "waiting": [name for _, name in not_donated(conn, guild_id, tracked, today)],
         "yesterday_count": y_count,
         "yesterday_coins": y_coins,
+        "streaks": top_streaks(conn, guild_id, tracked, today),
     }
 
 

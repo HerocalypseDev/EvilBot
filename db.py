@@ -378,6 +378,15 @@ def day_totals(conn, guild_id, day):
     return row[0], row[1]
 
 
+def donation_days(conn, guild_id):
+    """{discord_id: set of UTC days with an approved donation}."""
+    days = {}
+    for r in conn.execute("SELECT discord_id, day_utc FROM submissions WHERE guild_id = ? AND status = 'approved'",
+                          (guild_id,)):
+        days.setdefault(r["discord_id"], set()).add(r["day_utc"])
+    return days
+
+
 def get_igns(conn, guild_id):
     return {r["discord_id"]: r["ign"] for r in
             conn.execute("SELECT discord_id, ign FROM links WHERE guild_id = ?", (guild_id,))}

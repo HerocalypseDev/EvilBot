@@ -77,6 +77,11 @@ def board_embed(data, guild):
     embed.add_field(name="Yesterday (UTC)",
                     value=f"Donated: {data['yesterday_count']} · Coins: {data['yesterday_coins']:,}",
                     inline=False)
+    if data["streaks"]:
+        embed.add_field(name="Top streaks (days in a row)",
+                        value="\n".join(f"{board.short(ign)} · {n} days"
+                                         + (f" · {board.badge(n)}" if board.badge(n) else "")
+                                         for ign, n in data["streaks"]), inline=False)
     return brand(embed, guild, "Press Log donation once per day, after you donate in the game.")
 
 
@@ -801,6 +806,31 @@ async def linked(interaction: discord.Interaction):
     await interaction.response.send_message(messages[0], allowed_mentions=none)
     for text in messages[1:]:  # plain channel messages: a followup would show as a reply to the first
         await interaction.channel.send(text, allowed_mentions=none)
+
+
+@bot.tree.command(description="Your donation card: today, streak, this month and your rank.")
+@app_commands.guild_only()
+async def me(interaction: discord.Interaction):
+    row = db.get_guild(bot.db, interaction.guild_id)
+    if not row:
+        return await interaction.response.send_message("Bot is not set up yet.", ephemeral=True)
+    ign = db.get_ign(bot.db, interaction.guild_id, interaction.user.id)
+    if not ign:
+        return await interaction.response.send_message(
+            "You are not linked yet. Ask for a link with /link_request.", ephemeral=True)
+    card = board.member_card(bot.db, interaction.guild_id, tracked_members(interaction.guild, row["member_role_id"]),
+                             interaction.user.id, db.today_utc())
+    embed = discord.Embed(title=discord.utils.escape_markdown(ign), description=interaction.user.mention)
+    embed.add_field(name="Today", value="Donated" if card["today"] else f"Not yet · resets <t:{board.next_reset_ts()}:R>")
+    badge = board.badge(card["streak"])
+    embed.add_field(name="Streak", value=f"{card['streak']} days" + (f" · {badge}" if badge else "")
+                    + f"\nBest: {card['best']} days")
+    embed.add_field(name="This month (UTC)",
+                    value=f"{card['month_days']} days · {card['month_days'] * DONATION_AMOUNT:,} coins")
+    embed.add_field(name="Rank this month", value=f"#{card['rank']} of {card['members']}")
+    if interaction.user.display_avatar:
+        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
+    await interaction.response.send_message(embed=brand(embed, interaction.guild), ephemeral=True)
 
 
 @bot.tree.command(description="Remove a link. Staff can unlink other members.")
