@@ -291,15 +291,16 @@ _attend_lock = asyncio.Lock()
 _attend_seen = {}  # guild_id -> (boss id, state, day) the board last showed
 
 
-def attend_embed(data, guild):
+def attend_embed(data, guild, next_ts=None):
+    """Open: the boss, who attended and who did not. Closed: only when logging opens again."""
     embed = discord.Embed(title="Guild boss attendance")
-    if not data:
-        embed.description = "No boss yet. Logging opens when the next boss starts."
+    if not data or data["state"] != "open":
+        embed.description = ("**Logging is closed.**\n" + (
+            f"It opens at the next guild boss: <t:{next_ts}:t> (<t:{next_ts}:R>)." if next_ts
+            else "It opens when the next guild boss starts."))
         return brand(embed, guild)
-    boss_at, close = f"<t:{data['boss_ts']}:t>", f"<t:{data['close_ts']}:t>"
-    embed.description = (f"Boss at {boss_at}: logging open until {close} (<t:{data['close_ts']}:R>)."
-                         if data["state"] == "open" else
-                         f"Boss at {boss_at}: logging closed at {close}. It opens again when the next boss starts.")
+    embed.description = (f"Boss at <t:{data['boss_ts']}:t>: logging open until <t:{data['close_ts']}:t> "
+                         f"(<t:{data['close_ts']}:R>).")
     embed.add_field(name=f"Attended ({len(data['attended'])})",
                     value=board.join_capped([discord.utils.escape_markdown(n) for n in data["attended"]], sep="\n")
                     or "Nobody yet.", inline=False)
@@ -324,18 +325,21 @@ async def refresh_attend_board(guild):
         channel = row and row["attend_channel_id"] and guild.get_channel(row["attend_channel_id"])
         if not channel or not row["attend_message_id"]:
             return
-        embed = attend_embed(board.attend_board_data(bot.db, guild.id, tracked_members(guild, row["member_role_id"]),
-                                                     datetime.now(timezone.utc)), guild)
+        now = datetime.now(timezone.utc)
+        data = board.attend_board_data(bot.db, guild.id, tracked_members(guild, row["member_role_id"]), now)
+        upcoming = db.next_boss(bot.db, guild.id, now.isoformat(timespec="seconds"))
+        embed = attend_embed(data, guild, upcoming and int(iso_utc(upcoming["boss_time"]).timestamp()))
+        view = AttendView() if data and data["state"] == "open" else None  # no button while closed
         old = channel.get_partial_message(row["attend_message_id"])
         try:
             if channel.last_message_id == old.id:
-                await old.edit(embed=embed, view=AttendView())
+                await old.edit(embed=embed, view=view)
             else:
                 try:
                     await old.delete()
                 except discord.NotFound:
                     pass
-                new = await channel.send(embed=embed, view=AttendView())
+                new = await channel.send(embed=embed, view=view)
                 db.save_guild(bot.db, guild.id, attend_message_id=new.id)
         except discord.HTTPException as e:
             log.warning("Attendance board refresh failed in guild %s: %s", guild.id, e)
@@ -373,12 +377,12 @@ class AttendView(discord.ui.View):
 
 
 async def attend_tick(guild, row, now):
-    """Ping when a boss's logging opens. Refresh the board when the boss, its state or the day changes."""
-    current = db.started_boss(bot.db, guild.id, now.isoformat(timespec="seconds"))
-    if not current:
-        return
-    t = iso_utc(current["boss_time"])
-    state = boss.attend_state(t, now)
+    """Ping when a boss's logging opens. Refresh the board when the boss, its state, the next boss or the day
+    changes."""
+    now_text = now.isoformat(timespec="seconds")
+    current, upcoming = db.started_boss(bot.db, guild.id, now_text), db.next_boss(bot.db, guild.id, now_text)
+    state = current and boss.attend_state(iso_utc(current["boss_time"]), now)
+    t = current and iso_utc(current["boss_time"])
     # claimed before sending, so a restart never double-pings. Bot back after the window: no ping
     if state == "open" and db.claim_boss_open(bot.db, current["id"]):
         channel = guild.get_channel(row["attend_channel_id"])
@@ -386,7 +390,7 @@ async def attend_tick(guild, row, now):
         if channel and role:
             warn_if_role_not_pinged(await channel.send(boss.attend_open_text(role.mention, t)), role.id)
             log.info("Attendance open for %s in guild %s", current["boss_time"], guild.id)
-    key = (current["id"], state, now.date())
+    key = (current and current["id"], state, now.date(), upcoming and upcoming["id"])
     if _attend_seen.get(guild.id) != key:
         _attend_seen[guild.id] = key
         await refresh_attendance(guild)  # also moves the board below the ping

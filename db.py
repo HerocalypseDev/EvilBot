@@ -224,6 +224,12 @@ def started_boss(conn, guild_id, now):
                         "ORDER BY boss_time DESC LIMIT 1", (guild_id, now)).fetchone()
 
 
+def next_boss(conn, guild_id, now):
+    """The first boss after `now` (ISO 8601 UTC). It exists from its ping, 10 minutes before. None if none yet."""
+    return conn.execute("SELECT * FROM bosses WHERE guild_id = ? AND boss_time > ? ORDER BY boss_time LIMIT 1",
+                        (guild_id, now)).fetchone()
+
+
 def bosses_for_day(conn, guild_id, day):
     return conn.execute("SELECT * FROM bosses WHERE guild_id = ? AND day_utc = ? ORDER BY boss_time",
                         (guild_id, day)).fetchall()

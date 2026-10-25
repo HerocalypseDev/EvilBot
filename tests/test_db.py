@@ -145,3 +145,11 @@ def test_connect_adds_new_columns_to_an_old_database(tmp_path):
     db.save_guild(conn, 1, staff_channel_id=9, welcome_channel_id=8)
     row = db.get_guild(conn, 1)
     assert (row["panel_channel_id"], row["staff_channel_id"]) == (5, 9)
+
+
+def test_next_boss(conn):
+    assert db.next_boss(conn, G, "2026-10-22T13:00:00+00:00") is None
+    db.add_boss(conn, G, "2026-10-22T12:00:00+00:00")
+    db.add_boss(conn, G, "2026-10-22T14:00:00+00:00")
+    assert db.next_boss(conn, G, "2026-10-22T13:00:00+00:00")["boss_time"] == "2026-10-22T14:00:00+00:00"
+    assert db.next_boss(conn, G, "2026-10-22T14:00:00+00:00") is None  # started: not next any more
