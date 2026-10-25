@@ -691,6 +691,22 @@ async def roster_list(interaction: discord.Interaction):
 bot.tree.add_command(roster_group)
 
 
+@bot.tree.command(description="Staff: post everyone linked, with in-game name and Discord name.")
+@app_commands.guild_only()
+async def linked(interaction: discord.Interaction):
+    if not await require_staff(interaction):
+        return
+    lines = board.link_lines(db.get_igns(bot.db, interaction.guild_id))
+    if not lines:
+        return await interaction.response.send_message("Nobody is linked yet.", ephemeral=True)
+    none = discord.AllowedMentions.none()  # show the names without pinging anyone
+    groups = reminders.chunks(lines, 20)  # 20 lines of the longest names stay under Discord's 2000-character cap
+    await interaction.response.send_message(f"**Linked members ({len(lines)})**\n" + "\n".join(groups[0]),
+                                            allowed_mentions=none)
+    for group in groups[1:]:
+        await interaction.followup.send("\n".join(group), allowed_mentions=none)
+
+
 @bot.tree.command(description="Remove a link. Staff can unlink other members.")
 @app_commands.guild_only()
 @app_commands.describe(member="Staff can also paste the user ID of someone who left the server")

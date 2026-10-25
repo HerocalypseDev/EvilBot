@@ -2,8 +2,8 @@ from datetime import datetime, timezone
 
 import db
 from board import (attend_board_data, attend_data_sections, attend_report, board_data, boss_lists, member_day,
-                   data_sections, day_lists, join_capped, missed_in_row, next_reset_ts, not_donated, paginate,
-                   short)
+                   data_sections, day_lists, join_capped, link_lines, missed_in_row, next_reset_ts, not_donated,
+                   paginate, short)
 
 G, DAY, YDAY = 1, "2026-10-22", "2026-10-21"
 
@@ -183,3 +183,7 @@ def test_attend_report_and_missed_in_row():
     assert attend_report(conn, G, tracked, DAY, DAY, now) == (2, [("bob", 0), ("Cy", 0), ("Ann", 1)])
     assert missed_in_row(conn, G, tracked, now, 2) == (2, ["bob", "Cy"])
     assert missed_in_row(conn, G, tracked, now, 10) == (3, ["Cy"])
+
+
+def test_link_lines():
+    assert link_lines({2: "zed", 1: "Alpha_1"}) == ["**Alpha\_1** · <@1>", "**zed** · <@2>"]

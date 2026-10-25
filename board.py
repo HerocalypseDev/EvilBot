@@ -26,6 +26,11 @@ def join_capped(names, limit=1000, sep=", "):
     return f"{sep.join(shown)}{sep}+{len(names) - len(shown)} more" if shown else f"+{len(names)} more"
 
 
+def link_lines(igns):
+    """igns = {discord_id: ign}. One 'IGN · @member' line per link, sorted by in-game name."""
+    return [f"**{escape_markdown(ign)}** · <@{i}>" for i, ign in sorted(igns.items(), key=lambda x: x[1].lower())]
+
+
 def paginate(items, page, size=10):
     """Returns (items on the page, page clamped to the valid range, page count)."""
     pages = max(1, -(-len(items) // size))
