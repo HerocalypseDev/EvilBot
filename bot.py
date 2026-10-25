@@ -483,6 +483,23 @@ def warn_if_role_not_pinged(message, role_id):
                     "this role' for the member role, or give the bot Mention All Roles", message.guild.id)
 
 
+async def staff_post(guild, text=None, **kwargs):
+    """Post in the staff channel, if one is set. Never pings. Failures are only logged."""
+    row = db.get_guild(bot.db, guild.id)
+    channel = row and row["staff_channel_id"] and guild.get_channel(row["staff_channel_id"])
+    if not channel:
+        return
+    try:
+        await channel.send(text, allowed_mentions=discord.AllowedMentions.none(), **kwargs)
+    except discord.HTTPException as e:
+        log.warning("Staff channel post failed in guild %s: %s", guild.id, e)
+
+
+async def audit(interaction, text):
+    """One line in the staff channel for each staff action: who did what."""
+    await staff_post(interaction.guild, f"📝 {interaction.user.mention} {text}")
+
+
 async def post_boss_poll(guild, channel, role_id, cycle_start):
     message = await channel.send(boss.poll_text(f"<@&{role_id}>", cycle_start))
     warn_if_role_not_pinged(message, role_id)
@@ -648,6 +665,7 @@ async def setup(interaction: discord.Interaction, panel_channel: discord.TextCha
                   officer_role_id=officer_role.id, member_role_id=member_role.id)
     await refresh_board(interaction.guild)
     await interaction.followup.send(f"Panel posted in {panel_channel.mention}.", ephemeral=True)
+    await audit(interaction, f"ran /setup: panel in {panel_channel.mention}, officer role {officer_role.mention}.")
 
 
 async def link_autocomplete(interaction: discord.Interaction, current: str):
@@ -669,17 +687,19 @@ async def roster_add(interaction: discord.Interaction, names: str):
     if bad:
         msg += f"\nSkipped (names need {IGN_MIN} to {IGN_MAX} characters): {board.join_capped(bad, 500)}"
     await interaction.response.send_message(msg, ephemeral=True)
+    if added:
+        await audit(interaction, f"added {added} roster name(s).")
 
 
 @roster_group.command(name="remove", description="Staff: remove a name from the list.")
 async def roster_remove(interaction: discord.Interaction, name: str):
     if not await require_staff(interaction):
         return
-    if db.roster_remove(bot.db, interaction.guild_id, name):
-        msg = f"Removed **{name}**. Anyone already linked to it stays linked."
-    else:
-        msg = "That name is not on the list."
+    removed = db.roster_remove(bot.db, interaction.guild_id, name)
+    msg = f"Removed **{name}**. Anyone already linked to it stays linked." if removed else "That name is not on the list."
     await interaction.response.send_message(msg, ephemeral=True)
+    if removed:
+        await audit(interaction, f"removed **{discord.utils.escape_markdown(name)}** from the roster.")
 
 
 @roster_remove.autocomplete("name")
@@ -730,6 +750,7 @@ async def unlink(interaction: discord.Interaction, member: discord.User | None =
         msg = "Only staff can unlink other members."
     elif db.unlink(bot.db, interaction.guild_id, target.id):
         msg = f"Unlinked {target.display_name}."
+        await audit(interaction, f"unlinked {target.mention}.")
     else:
         msg = f"{target.display_name} has no link."
     await interaction.response.send_message(msg, ephemeral=True)
@@ -752,6 +773,7 @@ async def link_member(interaction: discord.Interaction, member: discord.Member, 
         msg = "That in-game name is already taken."
     else:
         msg = f"Linked {member.display_name} to **{name}**."
+        await audit(interaction, f"linked {member.mention} to **{discord.utils.escape_markdown(name)}**.")
     await interaction.response.send_message(msg, ephemeral=True)
 
 
@@ -795,6 +817,7 @@ async def log_donation(interaction: discord.Interaction, member: discord.Member,
             "Member already has an approved donation that day.", ephemeral=True)
     await interaction.response.send_message(
         f"Logged {DONATION_AMOUNT:,} for **{ign}** on {date}.", ephemeral=True)
+    await audit(interaction, f"logged a donation for {member.mention} on {date}.")
     await refresh_board(interaction.guild)
 
 
@@ -815,6 +838,8 @@ async def log_all(interaction: discord.Interaction, skip: discord.Member):
     if unlinked:
         msg += f"\nNot logged (no linked IGN): {board.join_capped(unlinked, 1500)}"
     await interaction.response.send_message(msg, ephemeral=True)
+    await audit(interaction, f"logged donations for {len(logged)} member(s) on {date} with /log_all, "
+                             f"skipping {skip.mention}.")
     await refresh_board(interaction.guild)
 
 
@@ -825,6 +850,7 @@ async def undo(interaction: discord.Interaction, submission_id: int):
         return
     if db.void(bot.db, interaction.guild_id, submission_id, interaction.user.id):
         await interaction.response.send_message(f"Voided donation #{submission_id}.", ephemeral=True)
+        await audit(interaction, f"voided donation #{submission_id}.")
         await refresh_board(interaction.guild)
     else:
         await interaction.response.send_message("That donation is not active.", ephemeral=True)
@@ -837,6 +863,7 @@ async def stop(interaction: discord.Interaction):
         return
     await interaction.response.send_message("Stopping. Start the bot again to bring the button back.",
                                             ephemeral=True)
+    await audit(interaction, "stopped the bot with /stop.")
     await bot.close()
 
 
@@ -850,6 +877,7 @@ async def backup_db(interaction: discord.Interaction):
     await interaction.response.send_message(
         "Full database copy. To restore it, upload it to the server as `donations.db`, with the bot stopped.",
         file=discord.File(io.BytesIO(data), name), ephemeral=True)
+    await audit(interaction, "downloaded a database backup.")
 
 
 @bot.tree.command(description="Staff: download all donations as a CSV file.")
@@ -993,6 +1021,37 @@ async def attendance_data_stop(interaction: discord.Interaction):
 
 bot.tree.add_command(attend_data_group)
 
+staff_group = app_commands.Group(name="staff_channel", description="The private staff channel: audit log, "
+                                 "reports and link requests.", guild_only=True)
+
+
+@staff_group.command(name="start", description="Staff: send the audit log, reports and link requests to a channel.")
+async def staff_start(interaction: discord.Interaction, channel: discord.TextChannel):
+    if not await require_staff(interaction):
+        return
+    if not db.get_guild(bot.db, interaction.guild_id):
+        return await interaction.response.send_message("Run /setup first.", ephemeral=True)
+    try:
+        await channel.send("📝 Staff channel set. Staff actions, reports and link requests show up here.")
+    except discord.HTTPException as e:
+        return await interaction.response.send_message(
+            f"Could not post in {channel.mention}: {e}\nGive the bot View Channel, Send Messages, Embed Links "
+            "and Attach Files there, then run /staff_channel start again.", ephemeral=True)
+    db.save_guild(bot.db, interaction.guild_id, staff_channel_id=channel.id)
+    await interaction.response.send_message(f"Staff channel set to {channel.mention}. Keep it private to staff.",
+                                            ephemeral=True)
+
+
+@staff_group.command(name="stop", description="Staff: stop posting to the staff channel.")
+async def staff_stop(interaction: discord.Interaction):
+    if not await require_staff(interaction):
+        return
+    db.save_guild(bot.db, interaction.guild_id, staff_channel_id=None)
+    await interaction.response.send_message("Staff channel stopped.", ephemeral=True)
+
+
+bot.tree.add_command(staff_group)
+
 
 def parse_day(date):
     """YYYY-MM-DD, default today (UTC). Raises ValueError."""
@@ -1094,6 +1153,7 @@ async def boss_add(interaction: discord.Interaction, member: discord.Member, dat
     await interaction.response.send_message(
         f"Logged **{discord.utils.escape_markdown(ign)}** for the boss at {day} {found['boss_time'][11:16]} UTC.",
         ephemeral=True)
+    await audit(interaction, f"marked {member.mention} as attended for the boss at {day} {found['boss_time'][11:16]} UTC.")
     await refresh_attendance(interaction.guild)
 
 
@@ -1118,6 +1178,7 @@ async def boss_remove(interaction: discord.Interaction, member: discord.User, da
         return await interaction.response.send_message("Member is not logged for that boss.", ephemeral=True)
     await interaction.response.send_message(
         f"Removed {member.display_name} from the boss at {day} {found['boss_time'][11:16]} UTC.", ephemeral=True)
+    await audit(interaction, f"removed {member.mention} from the boss at {day} {found['boss_time'][11:16]} UTC.")
     await refresh_attendance(interaction.guild)
 
 

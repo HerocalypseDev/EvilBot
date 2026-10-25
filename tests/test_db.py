@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 
 import db
@@ -131,3 +133,15 @@ def test_boss_attendance(conn):
     assert [r["discord_id"] for r in db.attendance_for_boss(conn, boss["id"])] == [B, A]  # newest first
     assert db.unattend(conn, boss["id"], A) and not db.unattend(conn, boss["id"], A)
     db.attend(conn, boss["id"], A, "a", "Ann")  # can log again after a staff removal
+
+
+def test_connect_adds_new_columns_to_an_old_database(tmp_path):
+    old = sqlite3.connect(tmp_path / "old.db")
+    old.execute("CREATE TABLE guilds (guild_id INTEGER PRIMARY KEY, panel_channel_id INTEGER)")
+    old.execute("INSERT INTO guilds VALUES (1, 5)")
+    old.commit()
+    old.close()
+    conn = db.connect(tmp_path / "old.db")
+    db.save_guild(conn, 1, staff_channel_id=9)
+    row = db.get_guild(conn, 1)
+    assert (row["panel_channel_id"], row["staff_channel_id"]) == (5, 9)

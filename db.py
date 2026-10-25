@@ -120,7 +120,8 @@ def connect(path):
     for column, kind in (("boss_channel_id", "INTEGER"), ("data_channel_id", "INTEGER"),
                          ("data_message_ids", "TEXT"), ("attend_channel_id", "INTEGER"),
                          ("attend_message_id", "INTEGER"), ("attend_data_channel_id", "INTEGER"),
-                         ("attend_data_message_ids", "TEXT")):  # columns added after the first release
+                         ("attend_data_message_ids", "TEXT"),
+                         ("staff_channel_id", "INTEGER")):  # columns added after the first release
         if column not in have:
             conn.execute(f"ALTER TABLE guilds ADD COLUMN {column} {kind}")
     return conn
@@ -131,7 +132,7 @@ def connect(path):
 GUILD_FIELDS = {"panel_channel_id", "status_message_id", "officer_role_id",
                 "member_role_id", "board_day", "boss_channel_id",
                 "data_channel_id", "data_message_ids", "attend_channel_id",
-                "attend_message_id", "attend_data_channel_id", "attend_data_message_ids"}
+                "attend_message_id", "attend_data_channel_id", "attend_data_message_ids", "staff_channel_id"}
 
 
 def save_guild(conn, guild_id, **fields):
