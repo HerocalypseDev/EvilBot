@@ -501,6 +501,37 @@ class Bot(commands.Bot):
         log.info("Evil Donations v%s starting", VERSION)
         tick.start()
 
+    async def on_member_remove(self, member):
+        """A member who leaves is unlinked, so their in-game name is free again. Their history stays."""
+        ign = db.get_ign(self.db, member.guild.id, member.id)
+        if ign and db.unlink(self.db, member.guild.id, member.id):
+            log.info("Unlinked %s (%s) after leaving guild %s", member.id, ign, member.guild.id)
+            await staff_post(member.guild, f"{member.mention} ({discord.utils.escape_markdown(member.display_name)}) "
+                                           f"left the server and was unlinked from **{discord.utils.escape_markdown(ign)}**.")
+            await refresh_all(member.guild)
+
+    async def on_member_update(self, before, after):
+        """Welcome DM when a member gets the guild member role."""
+        row = db.get_guild(self.db, after.guild.id)
+        if not row or before.get_role(row["member_role_id"]) or not after.get_role(row["member_role_id"]):
+            return
+        panel = after.guild.get_channel(row["panel_channel_id"])
+        attend = row["attend_channel_id"] and after.guild.get_channel(row["attend_channel_id"])
+        lines = [f"Welcome to **{after.guild.name}**. This bot tracks guild donations and guild boss attendance.",
+                 "",
+                 "**1. Get linked.** Run /link_request in the server and pick your in-game name. Staff approve it.",
+                 f"**2. Donate every day.** After you donate {DONATION_AMOUNT:,} coins in the game, press "
+                 f"**Log donation** in {panel.mention if panel else 'the donation channel'}. The day resets at "
+                 "00:00 UTC.",
+                 "**3. Guild boss.** Vote for a time in the boss poll, then press **I attended** in "
+                 f"{attend.mention if attend else 'the attendance channel'} after you join.",
+                 "",
+                 "Run /me any time to see your streak and rank, and /help for every command."]
+        try:
+            await after.send("\n".join(lines))
+        except discord.HTTPException:  # DMs closed
+            pass
+
     async def on_app_command_completion(self, interaction, command):
         if interaction.guild and not self.is_closed():  # /stop closes the bot inside the command
             await refresh_all(interaction.guild)
