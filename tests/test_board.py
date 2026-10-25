@@ -186,4 +186,4 @@ def test_attend_report_and_missed_in_row():
 
 
 def test_link_lines():
-    assert link_lines({2: "zed", 1: "Alpha_1"}) == ["**Alpha\_1** · <@1>", "**zed** · <@2>"]
+    assert link_lines({2: "zed", 1: "Alpha_1"}) == [r"**Alpha\_1** · <@1>", "**zed** · <@2>"]
