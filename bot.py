@@ -90,6 +90,16 @@ async def refresh_board(guild):
     await refresh_data(guild)
 
 
+async def refresh_all(guild):
+    """Every board and data channel. Runs after each command and button press."""
+    # ponytail: about 10 message edits per action; debounce here if Discord starts rate limiting
+    try:
+        await refresh_board(guild)
+        await refresh_attendance(guild)
+    except Exception:
+        log.exception("Refresh after an action failed in guild %s", guild.id)
+
+
 # --- data channel: a header message plus Donated / Not donated / Not linked, 15 rows per page ---
 
 DATA_SECTIONS = {
@@ -163,6 +173,7 @@ class DataView(discord.ui.View):
             else:
                 sections = board.data_sections(bot.db, guild.id, tracked, db.today_utc())
             await interaction.response.edit_message(embed=data_section_embed(guild.id, key, sections[key]))
+            await refresh_all(guild)
         return callback
 
 
@@ -275,7 +286,7 @@ class PanelView(discord.ui.View):
                 "You already logged a donation today.", ephemeral=True)
         await interaction.response.send_message(
             f"Logged {DONATION_AMOUNT:,} for today.", ephemeral=True)
-        await refresh_board(interaction.guild)
+        await refresh_all(interaction.guild)
 
 
 # --- attendance board: one message with the I attended button, kept at the bottom like the board ---
@@ -362,7 +373,7 @@ class AttendView(discord.ui.View):
         ts = int(iso_utc(current["boss_time"]).timestamp())
         await interaction.response.send_message(f"Logged attendance for the boss at <t:{ts}:t>.",
                                                 ephemeral=True)
-        await refresh_attendance(interaction.guild)
+        await refresh_all(interaction.guild)
 
 
 async def attend_tick(guild, row, now):
@@ -419,6 +430,7 @@ class HistoryView(discord.ui.View):
         embed = self.embed()
         self._update_buttons()
         await interaction.response.edit_message(embed=embed, view=self)
+        await refresh_all(interaction.guild)
 
     @discord.ui.button(label="Previous")
     async def previous(self, interaction, button):
@@ -444,6 +456,10 @@ class Bot(commands.Bot):
         await self.tree.sync()
         log.info("Evil Donations v%s starting", VERSION)
         tick.start()
+
+    async def on_app_command_completion(self, interaction, command):
+        if interaction.guild and not self.is_closed():  # /stop closes the bot inside the command
+            await refresh_all(interaction.guild)
 
     async def close(self):
         if not self.is_closed():
@@ -673,7 +689,6 @@ async def setup(interaction: discord.Interaction, panel_channel: discord.TextCha
     db.save_guild(bot.db, interaction.guild_id, panel_channel_id=panel_channel.id,
                   status_message_id=status.id,
                   officer_role_id=officer_role.id, member_role_id=member_role.id)
-    await refresh_board(interaction.guild)
     await interaction.followup.send(f"Panel posted in {panel_channel.mention}.", ephemeral=True)
     await audit(interaction, f"ran /setup: panel in {panel_channel.mention}, officer role {officer_role.mention}.")
 
@@ -828,7 +843,6 @@ async def log_donation(interaction: discord.Interaction, member: discord.Member,
     await interaction.response.send_message(
         f"Logged {DONATION_AMOUNT:,} for **{ign}** on {date}.", ephemeral=True)
     await audit(interaction, f"logged a donation for {member.mention} on {date}.")
-    await refresh_board(interaction.guild)
 
 
 @bot.tree.command(name="log_all", description="Staff: log today's donation for every linked member but one.")
@@ -850,7 +864,6 @@ async def log_all(interaction: discord.Interaction, skip: discord.Member):
     await interaction.response.send_message(msg, ephemeral=True)
     await audit(interaction, f"logged donations for {len(logged)} member(s) on {date} with /log_all, "
                              f"skipping {skip.mention}.")
-    await refresh_board(interaction.guild)
 
 
 @bot.tree.command(description="Staff: cancel a donation by its id (see /export).")
@@ -861,7 +874,6 @@ async def undo(interaction: discord.Interaction, submission_id: int):
     if db.void(bot.db, interaction.guild_id, submission_id, interaction.user.id):
         await interaction.response.send_message(f"Voided donation #{submission_id}.", ephemeral=True)
         await audit(interaction, f"voided donation #{submission_id}.")
-        await refresh_board(interaction.guild)
     else:
         await interaction.response.send_message("That donation is not active.", ephemeral=True)
 
@@ -985,7 +997,6 @@ async def attendance_start(interaction: discord.Interaction, channel: discord.Te
         except discord.HTTPException:
             pass
     db.save_guild(bot.db, interaction.guild_id, attend_channel_id=channel.id, attend_message_id=message.id)
-    await refresh_attendance(interaction.guild)
     await interaction.followup.send(f"Attendance board posted in {channel.mention}.", ephemeral=True)
 
 
@@ -1164,7 +1175,6 @@ async def boss_add(interaction: discord.Interaction, member: discord.Member, dat
         f"Logged **{discord.utils.escape_markdown(ign)}** for the boss at {day} {found['boss_time'][11:16]} UTC.",
         ephemeral=True)
     await audit(interaction, f"marked {member.mention} as attended for the boss at {day} {found['boss_time'][11:16]} UTC.")
-    await refresh_attendance(interaction.guild)
 
 
 @bot.tree.command(name="boss_remove", description="Staff: remove a member's attendance for a guild boss.")
@@ -1189,7 +1199,6 @@ async def boss_remove(interaction: discord.Interaction, member: discord.User, da
     await interaction.response.send_message(
         f"Removed {member.display_name} from the boss at {day} {found['boss_time'][11:16]} UTC.", ephemeral=True)
     await audit(interaction, f"removed {member.mention} from the boss at {day} {found['boss_time'][11:16]} UTC.")
-    await refresh_attendance(interaction.guild)
 
 
 async def send_text(interaction, header, lines, filename):
