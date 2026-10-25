@@ -27,8 +27,13 @@ def join_capped(names, limit=1000, sep=", "):
 
 
 def link_lines(igns):
-    """igns = {discord_id: ign}. One 'IGN · @member' line per link, sorted by in-game name."""
-    return [f"**{escape_markdown(ign)}** · <@{i}>" for i, ign in sorted(igns.items(), key=lambda x: x[1].lower())]
+    """igns = {discord_id: ign}. One line per link, sorted by in-game name. The number and name sit in
+    inline code padded to one width, so the monospace font lines up every @member in one column."""
+    rows = sorted(igns.items(), key=lambda x: x[1].lower())
+    width = max((len(ign) for ign in igns.values()), default=0)
+    num = len(str(len(rows)))
+    # a backtick would end the inline code early
+    return [f"`{k:>{num}}. {ign.replace('`', chr(39)):<{width}}`  <@{i}>" for k, (i, ign) in enumerate(rows, 1)]
 
 
 def pack_lines(lines, limit=2000):
