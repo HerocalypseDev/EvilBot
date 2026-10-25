@@ -121,12 +121,15 @@ def data_header_embed(sections, guild):
                     f"Not linked: **{counts['not_linked']}**"), guild)
 
 
+def closed_text(next_ts):
+    """Shown on the attendance board and data channel between bosses."""
+    return "**Logging is closed.**\n" + (f"It opens at the next guild boss: <t:{next_ts}:t> (<t:{next_ts}:R>)."
+                                          if next_ts else "It opens when the next guild boss starts.")
+
+
 def attend_header_embed(info, sections, guild):
-    if not info:
-        text = "No boss yet."
-    else:
-        boss_ts, close_ts, state = info
-        text = f"Boss at <t:{boss_ts}:t> · logging {'open until' if state == 'open' else 'closed at'} <t:{close_ts}:t>"
+    boss_ts, close_ts, _ = info
+    text = f"Boss at <t:{boss_ts}:t> · logging open until <t:{close_ts}:t>"
     return brand(discord.Embed(
         title="Boss attendance data",
         description=f"{text}\nAttended: **{len(sections['attended'])}** · "
@@ -196,22 +199,34 @@ async def refresh_attend_data(guild):
         channel = row and row["attend_data_channel_id"] and guild.get_channel(row["attend_data_channel_id"])
         if not channel:
             return
+        now = datetime.now(timezone.utc)
         info, sections = board.attend_data_sections(bot.db, guild.id, tracked_members(guild, row["member_role_id"]),
-                                                    datetime.now(timezone.utc))
-        embeds = [attend_header_embed(info, sections, guild)] + [data_section_embed(guild.id, key, sections[key])
-                                                          for key in ATTEND_SECTIONS]
+                                                    now)
+        is_open = bool(info) and info[2] == "open"
+        if is_open:
+            embeds = [attend_header_embed(info, sections, guild)] + [data_section_embed(guild.id, key, sections[key])
+                                                                     for key in ATTEND_SECTIONS]
+        else:  # between bosses: the same messages, closed, with no page buttons
+            upcoming = db.next_boss(bot.db, guild.id, now.isoformat(timespec="seconds"))
+            text = closed_text(upcoming and int(iso_utc(upcoming["boss_time"]).timestamp()))
+            embeds = [brand(discord.Embed(title="Boss attendance data", description=text), guild)]
+            embeds += [data_section_embed(guild.id, key, sections[key]) if key == "today_totals" else
+                       brand(discord.Embed(title=ATTEND_SECTIONS[key][0], description="Closed until the next guild boss."))
+                       for key in ATTEND_SECTIONS]
         return await show_sections(guild, channel, row["attend_data_message_ids"], "attend_data_message_ids",
-                                   embeds, ATTEND_SECTIONS)
+                                   embeds, ATTEND_SECTIONS, buttons=None if is_open else {"today_totals"})
 
 
-async def show_sections(guild, channel, ids_json, ids_field, embeds, keys):
+async def show_sections(guild, channel, ids_json, ids_field, embeds, keys, buttons=None):
     """Edit a header and its section messages in place. If one was deleted, post them all again.
-    Returns an error text if Discord refused, else None."""
+    buttons = the section keys that get page buttons (default: all). Returns an error text if Discord
+    refused, else None."""
     ids = json.loads(ids_json or "[]")
+    views = [None] + [DataView(key) if buttons is None or key in buttons else None for key in keys]
     try:
         if len(ids) == len(embeds):
-            for message_id, embed in zip(ids, embeds):
-                await channel.get_partial_message(message_id).edit(embed=embed)
+            for message_id, embed, view in zip(ids, embeds, views):
+                await channel.get_partial_message(message_id).edit(embed=embed, view=view)
             return
     except discord.NotFound:
         pass
@@ -224,9 +239,9 @@ async def show_sections(guild, channel, ids_json, ids_field, embeds, keys):
         except discord.HTTPException:
             pass
     try:
-        posted = [await channel.send(embed=embeds[0])]
-        for key, embed in zip(keys, embeds[1:]):
-            posted.append(await channel.send(embed=embed, view=DataView(key)))
+        posted = []
+        for embed, view in zip(embeds, views):
+            posted.append(await channel.send(embed=embed, view=view))
     except discord.HTTPException as e:
         log.warning("Data post failed in guild %s: %s", guild.id, e)
         return str(e)
@@ -294,10 +309,11 @@ _attend_seen = {}  # guild_id -> (boss id, state, day) the board last showed
 def attend_embed(data, guild, next_ts=None):
     """Open: the boss, who attended and who did not. Closed: only when logging opens again."""
     embed = discord.Embed(title="Guild boss attendance")
+    today_value = "\n".join(f"<t:{ts}:t> · {n} attended" for ts, n in data["today"]) if data else ""
     if not data or data["state"] != "open":
-        embed.description = ("**Logging is closed.**\n" + (
-            f"It opens at the next guild boss: <t:{next_ts}:t> (<t:{next_ts}:R>)." if next_ts
-            else "It opens when the next guild boss starts."))
+        embed.description = closed_text(next_ts)
+        if today_value:
+            embed.add_field(name="Today's bosses (UTC day)", value=today_value, inline=False)
         return brand(embed, guild)
     embed.description = (f"Boss at <t:{data['boss_ts']}:t>: logging open until <t:{data['close_ts']}:t> "
                          f"(<t:{data['close_ts']}:R>).")
@@ -308,7 +324,7 @@ def attend_embed(data, guild, next_ts=None):
                     value=board.join_capped([discord.utils.escape_markdown(n) for n in data["waiting"]], sep="\n")
                     or "Everyone attended.", inline=False)
     embed.add_field(name="Today's bosses (UTC day)",
-                    value="\n".join(f"<t:{ts}:t> · {n} attended" for ts, n in data["today"]) or "None yet.",
+                    value=today_value or "None yet.",
                     inline=False)
     return brand(embed, guild, "Press I attended during the hour after the boss starts.")
 
