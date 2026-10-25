@@ -633,6 +633,31 @@ async def _boss_tick(guild, row, now):
         log.info("Boss ping for %s in guild %s, votes %s", times[pick].isoformat(), guild.id, votes)
 
 
+async def post_weekly_leaderboard(guild, row, now):
+    """Mondays (UTC): last week's leaderboard in the panel channel, once per week."""
+    week_start = now.date() - timedelta(days=7)
+    if now.weekday() != 0 or not db.claim_post(bot.db, guild.id, "weekly", week_start.isoformat()):
+        return
+    channel = guild.get_channel(row["panel_channel_id"])
+    if not channel:
+        return
+    data = board.weekly_leaderboard(bot.db, guild.id, tracked_members(guild, row["member_role_id"]), week_start)
+    esc = discord.utils.escape_markdown
+    last_day = week_start + timedelta(days=6)
+    embed = discord.Embed(title="Weekly donation leaderboard",
+                          description=f"{week_start:%d %b} to {last_day:%d %b %Y} (UTC days)")
+    embed.add_field(name="Top donors", inline=False,
+                    value="\n".join(f"**{k}.** {esc(ign)} · {n}/7 days" for k, (ign, n) in enumerate(data["top"], 1))
+                    or "Nobody donated last week.")
+    embed.add_field(name=f"Perfect week ({len(data['perfect'])})", inline=False,
+                    value=board.join_capped([esc(n) for n in data["perfect"]]) or "Nobody this time.")
+    embed.add_field(name="Most improved", inline=False,
+                    value="\n".join(f"{esc(ign)} · +{n} days" for ign, n in data["improved"]) or "Nobody this time.")
+    await channel.send(embed=brand(embed, guild, "A new leaderboard every Monday"))
+    log.info("Weekly leaderboard posted for %s in guild %s", week_start, guild.id)
+    await refresh_board(guild)  # the post pushed the board up: move it back to the bottom
+
+
 _backup_failed_day = None
 
 
@@ -650,6 +675,7 @@ async def tick():
                 await boss_tick(guild, row, now)
             if row["attend_channel_id"]:
                 await attend_tick(guild, row, now)
+            await post_weekly_leaderboard(guild, row, now)
             if row["board_day"] != today:
                 await refresh_board(guild)
                 db.save_guild(bot.db, guild.id, board_day=today)

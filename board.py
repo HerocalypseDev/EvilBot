@@ -137,6 +137,22 @@ def member_card(conn, guild_id, tracked, discord_id, now):
     }
 
 
+def weekly_leaderboard(conn, guild_id, tracked, week_start):
+    """Linked members' donation days in the 7 days from week_start (a date), against the week before.
+    top: [(ign, days)] most first; perfect: igns with 7 of 7; improved: [(ign, days gained)] most first."""
+    igns, days = db.get_igns(conn, guild_id), db.donation_days(conn, guild_id)
+    week = {(week_start + timedelta(days=k)).isoformat() for k in range(7)}
+    before = {(week_start - timedelta(days=k)).isoformat() for k in range(1, 8)}
+    rows = [(igns[i], len(days.get(i, set()) & week), len(days.get(i, set()) & before))
+            for i, _ in tracked if i in igns]
+    by_name = sorted(rows, key=lambda r: r[0].lower())
+    return {
+        "top": [(ign, n) for ign, n, _ in sorted(by_name, key=lambda r: -r[1]) if n][:10],
+        "perfect": [ign for ign, n, _ in by_name if n == 7],
+        "improved": [(ign, n - b) for ign, n, b in sorted(by_name, key=lambda r: r[2] - r[1]) if n > b][:3],
+    }
+
+
 def not_donated(conn, guild_id, tracked, day):
     """tracked = [(discord_id, display_name)]. Returns [(discord_id, board_name)] who have no
     approved donation for `day`. Board name is the in-game name, or 'Name (not linked)'."""

@@ -60,6 +60,13 @@ CREATE TABLE IF NOT EXISTS reminders (
     sent_at        TEXT NOT NULL,
     PRIMARY KEY (guild_id, day_utc, minutes_before)
 );
+CREATE TABLE IF NOT EXISTS posts (
+    guild_id INTEGER NOT NULL,
+    kind     TEXT NOT NULL,
+    period   TEXT NOT NULL,
+    sent_at  TEXT NOT NULL,
+    PRIMARY KEY (guild_id, kind, period)
+);
 CREATE TABLE IF NOT EXISTS bosses (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id   INTEGER NOT NULL,
@@ -255,6 +262,13 @@ def mark_reminder(conn, guild_id, day, minutes_before):
         return conn.execute(
             "INSERT OR IGNORE INTO reminders VALUES (?, ?, ?, ?)",
             (guild_id, day, minutes_before, now_iso())).rowcount == 1
+
+
+def claim_post(conn, guild_id, kind, period):
+    """Claim a scheduled post (e.g. kind 'weekly', period '2026-10-19'). True only the first time."""
+    with conn:
+        return conn.execute("INSERT OR IGNORE INTO posts VALUES (?, ?, ?, ?)",
+                            (guild_id, kind, period, now_iso())).rowcount == 1
 
 
 # --- roster: the in-game names staff can pick in /link_member ---

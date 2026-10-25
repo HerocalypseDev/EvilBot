@@ -1,9 +1,9 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import db
 from board import (attend_board_data, bar, best_streak, member_card, streak, top_streaks, attend_data_sections, attend_report, board_data, boss_lists, member_day,
                    data_sections, day_lists, join_capped, link_lines, log_all, member_ids, missed_in_row, next_reset_ts, not_donated,
-                   pack_lines, paginate, short)
+                   pack_lines, paginate, short, weekly_leaderboard)
 
 G, DAY, YDAY = 1, "2026-10-22", "2026-10-21"
 
@@ -227,3 +227,15 @@ def test_streaks_and_card():
     assert (card["month_elapsed"], card["all_days"], card["next_badge"]) == (22, 1, (6, "7-day streak"))
     assert card["last_14"] == [False] * 13 + [True]
     assert bar(3, 6, width=4) == "██░░" and bar(0, 0) == "░" * 10
+
+
+def test_weekly_leaderboard():
+    conn = conn_with((1, "Aa"), (2, "Bb"), (3, "Cc"))
+    start = date(2026, 10, 19)
+    for k in range(7):
+        db.record(conn, G, 1, "one", "Aa", (start + timedelta(days=k)).isoformat())
+    for k in (0, 1):
+        db.record(conn, G, 2, "two", "Bb", (start + timedelta(days=k)).isoformat())
+    db.record(conn, G, 1, "one", "Aa", "2026-10-18")  # week before: Aa 1 day, Bb 0
+    data = weekly_leaderboard(conn, G, [(1, "one"), (2, "two"), (3, "three")], start)
+    assert data == {"top": [("Aa", 7), ("Bb", 2)], "perfect": ["Aa"], "improved": [("Aa", 6), ("Bb", 2)]}
