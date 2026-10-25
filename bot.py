@@ -493,6 +493,7 @@ class Bot(commands.Bot):
     async def setup_hook(self):
         self.add_view(PanelView())  # keeps the panel button working after a restart
         self.add_view(AttendView())
+        self.add_view(BossPollView())
         for key in [*DATA_SECTIONS, *ATTEND_SECTIONS]:
             self.add_view(DataView(key))
         await self.tree.sync()
@@ -568,8 +569,54 @@ async def audit(interaction, text):
     await staff_post(interaction.guild, f"📝 {interaction.user.mention} {text}")
 
 
+class BossPollView(discord.ui.View):
+    """Skip button under each boss poll: staff close the poll with no ping, and the next poll follows."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Skip this boss (staff)", style=discord.ButtonStyle.secondary, custom_id="boss_skip")
+    async def skip(self, interaction, button):
+        if not await require_staff(interaction):
+            return
+        poll = db.poll_by_message(bot.db, interaction.message.id)
+        now = datetime.now(timezone.utc)
+        # resolved now: the next poll follows boss.NEXT_POLL_DELAY later
+        if not poll or not db.resolve_boss_poll(bot.db, interaction.guild_id, poll["cycle_start"], now.isoformat()):
+            return await interaction.response.send_message("This poll is already closed.", ephemeral=True)
+        await interaction.response.edit_message(
+            content=f"{interaction.message.content}\n**Result:** skipped by {interaction.user.mention}. "
+                    "The next poll follows soon.", view=None, allowed_mentions=discord.AllowedMentions.none())
+        await audit(interaction, f"skipped the guild boss poll for <t:{int(iso_utc(poll['cycle_start']).timestamp())}:t>.")
+        await refresh_all(interaction.guild)
+
+
+async def close_poll_message(channel, message_id, text):
+    """Add the result line to a poll and remove its Skip button. A deleted poll is fine."""
+    try:
+        message = await channel.fetch_message(message_id)
+        await message.edit(content=f"{message.content}\n{text}", view=None,
+                           allowed_mentions=discord.AllowedMentions.none())
+    except discord.HTTPException as e:
+        log.warning("Could not close boss poll %s: %s", message_id, e)
+
+
+async def clean_old_polls(guild, channel, now):
+    """Delete poll and ping messages a day after their cycle. Marked done even if Discord refuses, so a
+    failing delete is not retried every minute."""
+    for poll in db.polls_to_clean(bot.db, guild.id, (now - timedelta(days=1)).isoformat()):
+        for message_id in filter(None, (poll["message_id"], poll["ping_message_id"])):
+            try:
+                await channel.get_partial_message(message_id).delete()
+            except discord.NotFound:
+                pass
+            except discord.HTTPException as e:
+                log.warning("Could not delete old boss message %s: %s", message_id, e)
+        db.mark_poll_cleaned(bot.db, guild.id, poll["cycle_start"])
+
+
 async def post_boss_poll(guild, channel, role_id, cycle_start):
-    message = await channel.send(boss.poll_text(f"<@&{role_id}>", cycle_start))
+    message = await channel.send(boss.poll_text(f"<@&{role_id}>", cycle_start), view=BossPollView())
     warn_if_role_not_pinged(message, role_id)
     db.add_boss_poll(bot.db, guild.id, cycle_start.isoformat(), message.id)
     for emoji in boss.EMOJIS:
@@ -617,10 +664,11 @@ async def _boss_tick(guild, row, now):
     if action == "post":
         return await post_boss_poll(guild, channel, role.id, when)
     if action == "end":
-        db.resolve_boss_poll(bot.db, guild.id, latest["cycle_start"], when.isoformat())
+        if db.resolve_boss_poll(bot.db, guild.id, latest["cycle_start"], when.isoformat()):
+            await close_poll_message(channel, latest["message_id"], boss.result_text(None, 0))
         return
     if action == "wait":
-        return
+        return await clean_old_polls(guild, channel, now)
     cycle = state[0]
     times = boss.slot_times(cycle)
     votes = await count_votes(guild, channel, latest["message_id"], role.id)
@@ -629,7 +677,10 @@ async def _boss_tick(guild, row, now):
     if pick is not None and db.resolve_boss_poll(bot.db, guild.id, latest["cycle_start"],
                                                  times[pick].isoformat()):
         db.add_boss(bot.db, guild.id, times[pick].isoformat())  # attendance opens at this time
-        warn_if_role_not_pinged(await channel.send(boss.ping_text(role.mention, times[pick])), role.id)
+        ping = await channel.send(boss.ping_text(role.mention, times[pick], votes[pick]))
+        warn_if_role_not_pinged(ping, role.id)
+        db.save_ping_message(bot.db, guild.id, latest["cycle_start"], ping.id)
+        await close_poll_message(channel, latest["message_id"], boss.result_text(times[pick], votes[pick]))
         log.info("Boss ping for %s in guild %s, votes %s", times[pick].isoformat(), guild.id, votes)
 
 

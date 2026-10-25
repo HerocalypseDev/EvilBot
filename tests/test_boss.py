@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 import db
-from boss import attend_state, next_cycle_start, pick_ping, poll_text, slot_times, upcoming_cycle
+from boss import attend_state, next_cycle_start, pick_ping, poll_text, result_text, slot_times, upcoming_cycle
 
 C = datetime(2026, 10, 22, 12, 0, tzinfo=timezone.utc)  # the 12:00 cycle: options 12..17
 
@@ -58,7 +58,7 @@ def test_nothing_ahead_after_the_last_time():
 
 def test_poll_text_has_six_options_and_local_time_tags():
     text = poll_text("<@&5>", C)
-    assert text.count("<t:") == 6 and "UTC" not in text
+    assert text.count("<t:") == 12 and text.count(":R>") == 6 and "UTC" not in text
     assert f"<t:{int(C.timestamp())}:t>" in text and f"<t:{int(at(18).timestamp())}:t>" not in text
 
 
@@ -90,3 +90,20 @@ def test_attend_state():
     assert attend_state(t, t) == "open"
     assert attend_state(t, t + timedelta(minutes=59)) == "open"
     assert attend_state(t, t + timedelta(hours=1)) == "closed"
+
+
+def test_result_text():
+    assert f"<t:{int(C.timestamp())}:t> won with 3 vote(s)" in result_text(C, 3)
+    assert "no time was picked" in result_text(None, 0)
+
+
+def test_old_polls_are_cleaned_once():
+    conn = db.connect(":memory:")
+    db.add_boss_poll(conn, 1, "2026-10-21T00:00:00+00:00", 10)
+    db.add_boss_poll(conn, 1, "2026-10-22T00:00:00+00:00", 11)  # still open: kept
+    db.resolve_boss_poll(conn, 1, "2026-10-21T00:00:00+00:00", "2026-10-21T02:00:00+00:00")
+    db.save_ping_message(conn, 1, "2026-10-21T00:00:00+00:00", 20)
+    old = db.polls_to_clean(conn, 1, "2026-10-23T00:00:00+00:00")
+    assert [(p["message_id"], p["ping_message_id"]) for p in old] == [(10, 20)]
+    db.mark_poll_cleaned(conn, 1, "2026-10-21T00:00:00+00:00")
+    assert db.polls_to_clean(conn, 1, "2026-10-23T00:00:00+00:00") == []

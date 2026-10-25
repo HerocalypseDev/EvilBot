@@ -62,15 +62,24 @@ def pick_ping(now, cycle_start, votes):
 
 def poll_text(role_mention, cycle_start):
     lines = [f"{role_mention} **Guild boss time vote.** React with every time that works for you. "
-             "Times below are shown in your own time zone."]
+             "Times below are shown in your own time zone, with a countdown."]
     for emoji, t in zip(EMOJIS, slot_times(cycle_start)):
-        lines.append(f"{emoji} <t:{int(t.timestamp())}:t>")
+        ts = int(t.timestamp())
+        lines.append(f"{emoji} <t:{ts}:t> · <t:{ts}:R>")
     return "\n".join(lines)
 
 
-def ping_text(role_mention, t):
+def result_text(t, votes):
+    """Line added to the poll when it closes. t = winning time, or None when no time was picked."""
+    if t is None:
+        return "**Result:** no time was picked. The next poll follows soon."
+    return f"**Result:** <t:{int(t.timestamp())}:t> won with {votes} vote(s)."
+
+
+def ping_text(role_mention, t, votes):
     ts = int(t.timestamp())
-    return f"{role_mention} Guild boss at <t:{ts}:t> (<t:{ts}:R>). Go to the guild island now."
+    return (f"{role_mention} Guild boss at <t:{ts}:t> (<t:{ts}:R>), picked with {votes} vote(s). "
+            "Go to the guild island now.")
 
 
 def attend_state(boss_time, now):

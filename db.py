@@ -123,6 +123,10 @@ def connect(path):
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(boss_polls)")}
+    for column in ("ping_message_id", "cleaned_at"):  # columns added after the first release
+        if column not in have:
+            conn.execute(f"ALTER TABLE boss_polls ADD COLUMN {column} {'INTEGER' if column.endswith('id') else 'TEXT'}")
     have = {r["name"] for r in conn.execute("PRAGMA table_info(guilds)")}
     for column, kind in (("boss_channel_id", "INTEGER"), ("data_channel_id", "INTEGER"),
                          ("data_message_ids", "TEXT"), ("attend_channel_id", "INTEGER"),
@@ -178,6 +182,28 @@ def resolve_boss_poll(conn, guild_id, cycle_start, resolved_time):
         return conn.execute(
             "UPDATE boss_polls SET resolved_time = ? WHERE guild_id = ? AND cycle_start = ? "
             "AND resolved_time IS NULL", (resolved_time, guild_id, cycle_start)).rowcount == 1
+
+
+def poll_by_message(conn, message_id):
+    return conn.execute("SELECT * FROM boss_polls WHERE message_id = ?", (message_id,)).fetchone()
+
+
+def save_ping_message(conn, guild_id, cycle_start, message_id):
+    with conn:
+        conn.execute("UPDATE boss_polls SET ping_message_id = ? WHERE guild_id = ? AND cycle_start = ?",
+                     (message_id, guild_id, cycle_start))
+
+
+def polls_to_clean(conn, guild_id, before, limit=5):
+    """Closed polls whose cycle started before `before` (ISO 8601 UTC) and whose messages are not deleted yet."""
+    return conn.execute("SELECT * FROM boss_polls WHERE guild_id = ? AND cycle_start < ? AND resolved_time IS NOT NULL "
+                        "AND cleaned_at IS NULL ORDER BY cycle_start LIMIT ?", (guild_id, before, limit)).fetchall()
+
+
+def mark_poll_cleaned(conn, guild_id, cycle_start):
+    with conn:
+        conn.execute("UPDATE boss_polls SET cleaned_at = ? WHERE guild_id = ? AND cycle_start = ?",
+                     (now_iso(), guild_id, cycle_start))
 
 
 # --- boss attendance: one boss row per ping, at the winning time ---
