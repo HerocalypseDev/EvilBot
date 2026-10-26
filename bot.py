@@ -1917,6 +1917,60 @@ async def xp_setup(interaction: discord.Interaction, xp_channel: discord.TextCha
     await refresh_xp_panel(interaction.guild)
 
 
+def xp_target(interaction, member, date):
+    """(day, ign, error text). The day must not be in the future."""
+    try:
+        day = parse_day(date)
+    except ValueError:
+        return None, None, BAD_DATE
+    if day > db.today_utc():
+        return None, None, "That day has not started yet (UTC)."
+    ign = db.get_ign(bot.db, interaction.guild_id, member.id)
+    return day, ign, None if ign else "Member has no linked IGN."
+
+
+@bot.tree.command(name="xp_log", description="Staff: log a member's weekly XP total for a day. Logging a day again "
+                                             "replaces it.")
+@app_commands.guild_only()
+@app_commands.describe(total="Weekly total shown in the game (it went back to 0 on Monday)",
+                       date="Day as YYYY-MM-DD. Default: today (UTC).")
+async def xp_log(interaction: discord.Interaction, member: discord.Member,
+                 total: app_commands.Range[int, 0, XP_CAP * 7], date: str | None = None):
+    if not await require_staff(interaction):
+        return
+    day, ign, error = xp_target(interaction, member, date)
+    if error:
+        return await interaction.response.send_message(error, ephemeral=True)
+    try:
+        db.xp_set(bot.db, interaction.guild_id, member.id, day, interaction.user.id, total=total)
+    except db.XpInvalid as e:
+        return await interaction.response.send_message(xp_invalid_text(e), ephemeral=True)
+    gain = next(d["gain"] for d in db.xp_week(bot.db, interaction.guild_id, member.id, day) if d["day"] == day)
+    await interaction.response.send_message(
+        f"Logged **{discord.utils.escape_markdown(ign)}** on {day}: weekly total {total:,}, gain {gain:,} XP.",
+        ephemeral=True)
+    await audit(interaction, f"logged {member.mention}'s XP on {day}: total {total:,}, gain {gain:,}.")
+    await refresh_xp_panel(interaction.guild)
+
+
+@bot.tree.command(name="xp_delete", description="Staff: delete a member's XP log for a day.")
+@app_commands.guild_only()
+@app_commands.describe(date="Day as YYYY-MM-DD")
+async def xp_delete(interaction: discord.Interaction, member: discord.Member, date: str):
+    if not await require_staff(interaction):
+        return
+    day, ign, error = xp_target(interaction, member, date)
+    if error:
+        return await interaction.response.send_message(error, ephemeral=True)
+    if not db.xp_delete(bot.db, interaction.guild_id, member.id, day):
+        return await interaction.response.send_message(f"No XP log for {member.display_name} on {day}.",
+                                                       ephemeral=True)
+    await interaction.response.send_message(f"Deleted the XP log for **{discord.utils.escape_markdown(ign)}** "
+                                            f"on {day}.", ephemeral=True)
+    await audit(interaction, f"deleted {member.mention}'s XP log on {day}.")
+    await refresh_xp_panel(interaction.guild)
+
+
 def command_lines():
     """(member lines, staff lines) for /help, read from the commands themselves, so new ones show up."""
     member, staff = [], []
