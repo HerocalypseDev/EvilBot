@@ -1971,6 +1971,55 @@ async def xp_delete(interaction: discord.Interaction, member: discord.Member, da
     await refresh_xp_panel(interaction.guild)
 
 
+@bot.tree.command(name="xp_day", description="Staff: every member's XP gain on a day (UTC).")
+@app_commands.guild_only()
+@app_commands.describe(date="Day as YYYY-MM-DD. Default: today (UTC).")
+async def xp_day(interaction: discord.Interaction, date: str | None = None):
+    if not await require_staff(interaction):
+        return
+    try:
+        day = parse_day(date)
+    except ValueError:
+        return await interaction.response.send_message(BAD_DATE, ephemeral=True)
+    row = db.get_guild(bot.db, interaction.guild_id)
+    if not row:
+        return await interaction.response.send_message("Run /setup first.", ephemeral=True)
+    rows, pending = xp_rows(interaction.guild, row, day), db.xp_pending(bot.db, interaction.guild_id, day)
+    esc = discord.utils.escape_markdown
+    lines = [f"{esc(name)} · {esc(ign)} · " + (f"{gain:,} XP" if gain is not None else "not logged")
+             + (" · request pending" if i in pending else "") for i, name, ign, gain in rows]
+    capped = sum(gain is not None and gain >= XP_CAP for *_, gain in rows)
+    missing = sum(gain is None for *_, gain in rows)
+    header = (f"**XP on {day} (UTC)** · hit cap: {capped} · under cap: {len(rows) - capped - missing} · "
+              f"not logged: {missing}")
+    await send_text(interaction, header, lines or ["No linked members."], f"xp_{day}.txt")
+
+
+@bot.tree.command(name="xp_member", description="Staff: a member's XP for each day of a week.")
+@app_commands.guild_only()
+@app_commands.describe(date="Any day of the week as YYYY-MM-DD. Default: this week.")
+async def xp_member(interaction: discord.Interaction, member: discord.Member, date: str | None = None):
+    if not await require_staff(interaction):
+        return
+    try:
+        day = parse_day(date)
+    except ValueError:
+        return await interaction.response.send_message(BAD_DATE, ephemeral=True)
+    ign = db.get_ign(bot.db, interaction.guild_id, member.id)
+    if not ign:
+        return await interaction.response.send_message("Member has no linked IGN.", ephemeral=True)
+    week = [d for d in db.xp_week(bot.db, interaction.guild_id, member.id, day) if d["day"] <= db.today_utc()]
+    logged = [d for d in week if d["gain"] is not None]
+    lines = [f"**{discord.utils.escape_markdown(ign)}** ({member.mention}) · week of {db.week_start(day)} (UTC) · "
+             f"total {logged[-1]['total'] if logged else 0:,} XP · hit cap {sum(d['gain'] >= XP_CAP for d in logged)} "
+             f"of {len(week)} days"]
+    lines += [f"{datetime.strptime(d['day'], '%Y-%m-%d'):%a} {d['day']} · "
+              + (f"+{d['gain']:,} · total {d['total']:,} · by <@{d['logged_by']}>" if d["gain"] is not None
+                 else "not logged") for d in week]
+    await interaction.response.send_message("\n".join(lines), ephemeral=True,
+                                            allowed_mentions=discord.AllowedMentions.none())
+
+
 def command_lines():
     """(member lines, staff lines) for /help, read from the commands themselves, so new ones show up."""
     member, staff = [], []
