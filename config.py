@@ -15,4 +15,4 @@ if not all(5 <= m <= 1435 for m in REMINDER_MINUTES):
 BACKUP_HOUR_UTC = 4
 IGN_MIN, IGN_MAX = 2, 32
 XP_CAP = 1500  # most XP a member can gain in one UTC day
-VERSION = "2.0.0"  # bump on each upload, so /help and the startup log show which code is live
+VERSION = "2.1.0"  # bump on each upload, so /help and the startup log show which code is live
