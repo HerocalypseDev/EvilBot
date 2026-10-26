@@ -187,3 +187,11 @@ def test_xp_requests(conn):
     assert db.close_xp_request(conn, G, rid, "approved", 9)
     assert not db.close_xp_request(conn, G, rid, "denied", 9)  # already closed
     assert db.get_xp_request(conn, G, rid)["status"] == "approved" and db.xp_pending(conn, G) == set()
+
+
+def test_xp_cap_days_across_weeks(conn):
+    db.xp_set(conn, G, A, "2026-10-25", 9, total=3000)  # Sunday: 1500 over two days, not at cap
+    db.xp_set(conn, G, A, "2026-10-24", 9, total=1500)  # Saturday at cap, so Sunday is too
+    db.xp_set(conn, G, A, "2026-10-26", 9, gain=1500)  # Monday, new week
+    db.xp_set(conn, G, A, "2026-10-27", 9, total=2000)
+    assert db.xp_cap_days(conn, G, A) == {"2026-10-24", "2026-10-25", "2026-10-26"}

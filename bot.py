@@ -1085,6 +1085,9 @@ async def me(interaction: discord.Interaction):
         embed.add_field(name="XP rank this week", value=f"**#{1 + sum(t > mine for t in totals.values())}** of "
                         f"{len(totals)} · hit cap {sum(d['gain'] is not None and d['gain'] >= XP_CAP for d in week)}"
                         f" of {len(week)} days")
+        cap_days = db.xp_cap_days(bot.db, interaction.guild_id, user.id)
+        embed.add_field(name="XP cap streak", value=f"**{board.streak(cap_days, today)}** days · best "
+                        f"{board.best_streak(cap_days)}")
         embed.add_field(name="XP by day (✓ = hit cap)", inline=False, value="```\n" + "\n".join(
             f"{datetime.strptime(d['day'], '%Y-%m-%d'):%a}  "
             + (f"{d['gain']:>6,}{' ✓' if d['gain'] >= XP_CAP else ''}" if d["gain"] is not None else "     -")

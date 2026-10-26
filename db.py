@@ -607,3 +607,11 @@ def xp_pending(conn, guild_id, day=None):
     """Discord ids with a pending request, on `day` or on any day."""
     sql = "SELECT discord_id FROM xp_requests WHERE guild_id = ? AND status = 'pending'"
     return {r[0] for r in conn.execute(sql + (" AND day_utc = ?" if day else ""), (guild_id, *([day] if day else [])))}
+
+
+def xp_cap_days(conn, guild_id, discord_id):
+    """Every UTC day the member gained at least XP_CAP."""
+    weeks = {week_start(r[0]) for r in conn.execute("SELECT day_utc FROM xp_logs WHERE guild_id = ? AND discord_id = ?",
+                                                    (guild_id, discord_id))}
+    return {d["day"] for w in weeks for d in xp_week(conn, guild_id, discord_id, w)
+            if d["gain"] is not None and d["gain"] >= XP_CAP}
