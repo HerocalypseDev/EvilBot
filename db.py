@@ -4,7 +4,7 @@ import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-from config import DONATION_AMOUNT, IGN_MAX, IGN_MIN
+from config import DONATION_AMOUNT, IGN_MAX, IGN_MIN, XP_CAP
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS guilds (
@@ -84,6 +84,28 @@ CREATE TABLE IF NOT EXISTS attendance (
     created_at   TEXT NOT NULL,
     PRIMARY KEY (boss_id, discord_id)
 );
+CREATE TABLE IF NOT EXISTS xp_logs (
+    guild_id   INTEGER NOT NULL,
+    discord_id INTEGER NOT NULL,
+    day_utc    TEXT NOT NULL,
+    total      INTEGER,
+    gain       INTEGER,
+    logged_by  INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (guild_id, discord_id, day_utc),
+    CHECK ((total IS NULL) != (gain IS NULL))
+);
+CREATE TABLE IF NOT EXISTS xp_requests (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id    INTEGER NOT NULL,
+    discord_id  INTEGER NOT NULL,
+    day_utc     TEXT NOT NULL,
+    status      TEXT NOT NULL CHECK (status IN ('pending','approved','denied')),
+    reviewed_by INTEGER,
+    created_at  TEXT NOT NULL,
+    reviewed_at TEXT,
+    UNIQUE (guild_id, discord_id, day_utc)
+);
 """
 
 
@@ -105,6 +127,14 @@ class NotInRoster(Exception):
 
 class AlreadyAttended(Exception):
     pass
+
+
+class AlreadyRequested(Exception):
+    pass
+
+
+class XpInvalid(Exception):
+    """A log that would give some day of the week a gain below 0 or above the cap. args: (day, gain, cap)."""
 
 
 def now_iso():
@@ -133,7 +163,8 @@ def connect(path):
                          ("attend_message_id", "INTEGER"), ("attend_data_channel_id", "INTEGER"),
                          ("attend_data_message_ids", "TEXT"),
                          ("staff_channel_id", "INTEGER"),
-                         ("welcome_channel_id", "INTEGER")):  # columns added after the first release
+                         ("welcome_channel_id", "INTEGER"), ("xp_channel_id", "INTEGER"),
+                         ("xp_message_id", "INTEGER"), ("xp_review_channel_id", "INTEGER")):  # columns added after the first release
         if column not in have:
             conn.execute(f"ALTER TABLE guilds ADD COLUMN {column} {kind}")
     return conn
@@ -145,7 +176,7 @@ GUILD_FIELDS = {"panel_channel_id", "status_message_id", "officer_role_id",
                 "member_role_id", "board_day", "boss_channel_id",
                 "data_channel_id", "data_message_ids", "attend_channel_id",
                 "attend_message_id", "attend_data_channel_id", "attend_data_message_ids", "staff_channel_id",
-                "welcome_channel_id"}
+                "welcome_channel_id", "xp_channel_id", "xp_message_id", "xp_review_channel_id"}
 
 
 def save_guild(conn, guild_id, **fields):
@@ -479,3 +510,94 @@ def export_csv(conn, guild_id):
     for row in conn.execute("SELECT * FROM submissions WHERE guild_id = ? ORDER BY id", (guild_id,)):
         writer.writerow([safe_cell(row[c]) for c in _CSV_COLUMNS])
     return out.getvalue()
+
+
+# --- XP: officers log each member's weekly running total (weeks start Monday 00:00 UTC at 0).
+# An approved "I hit cap" request stores a gain of XP_CAP instead of a total. ---
+
+def week_start(day):
+    """Monday (ISO date) of the week holding `day` (ISO date)."""
+    d = datetime.strptime(day, "%Y-%m-%d").date()
+    return (d - timedelta(days=d.weekday())).isoformat()
+
+
+def xp_week_days(rows, monday):
+    """rows: the member's xp_logs rows in the week. Returns 7 dicts Monday first: day, gain, total, cap,
+    logged_by. gain/total are None on a day with no log. A total log's gain is the rise since the last logged
+    day, so a missed day's XP lands on the next log. cap = XP_CAP times the days since the last log."""
+    by_day = {r["day_utc"]: r for r in rows}
+    start = datetime.strptime(monday, "%Y-%m-%d").date()
+    out, last, last_k = [], 0, -1
+    for k in range(7):
+        day = (start + timedelta(days=k)).isoformat()
+        r = by_day.get(day)
+        if not r:
+            out.append({"day": day, "gain": None, "total": None, "cap": None, "logged_by": None})
+            continue
+        gain = r["gain"] if r["total"] is None else r["total"] - last
+        last += gain
+        out.append({"day": day, "gain": gain, "total": last, "cap": XP_CAP * (k - last_k), "logged_by": r["logged_by"]})
+        last_k = k
+    return out
+
+
+def xp_week(conn, guild_id, discord_id, day):
+    """The 7 days (see xp_week_days) of the week holding `day`."""
+    monday = week_start(day)
+    sunday = (datetime.strptime(monday, "%Y-%m-%d").date() + timedelta(days=6)).isoformat()
+    rows = conn.execute("SELECT * FROM xp_logs WHERE guild_id = ? AND discord_id = ? AND day_utc BETWEEN ? AND ?",
+                        (guild_id, discord_id, monday, sunday)).fetchall()
+    return xp_week_days(rows, monday)
+
+
+def xp_set(conn, guild_id, discord_id, day, logged_by, total=None, gain=None):
+    """Save one day's log (replaces that day's log). Pass total (weekly running total) or gain.
+    Raises XpInvalid, and saves nothing, if any day of the week would end up below 0 or above its cap."""
+    with conn:
+        conn.execute("INSERT OR REPLACE INTO xp_logs VALUES (?, ?, ?, ?, ?, ?, ?)",
+                     (guild_id, discord_id, day, total, gain, logged_by, now_iso()))
+        for d in xp_week(conn, guild_id, discord_id, day):
+            if d["gain"] is not None and not 0 <= d["gain"] <= d["cap"]:
+                raise XpInvalid(d["day"], d["gain"], d["cap"])  # rolls the insert back
+
+
+def xp_delete(conn, guild_id, discord_id, day):
+    with conn:
+        return conn.execute("DELETE FROM xp_logs WHERE guild_id = ? AND discord_id = ? AND day_utc = ?",
+                            (guild_id, discord_id, day)).rowcount == 1
+
+
+def xp_gains(conn, guild_id, day):
+    """{discord_id: that day's gain} for every member logged on `day`."""
+    ids = [r[0] for r in conn.execute("SELECT discord_id FROM xp_logs WHERE guild_id = ? AND day_utc = ?",
+                                      (guild_id, day))]
+    return {i: next(d["gain"] for d in xp_week(conn, guild_id, i, day) if d["day"] == day) for i in ids}
+
+
+def xp_request(conn, guild_id, discord_id, day):
+    """Open an "I hit cap" request. Raises AlreadyRequested if the member has one for that day."""
+    try:
+        with conn:
+            return conn.execute("INSERT INTO xp_requests (guild_id, discord_id, day_utc, status, created_at) "
+                                "VALUES (?, ?, ?, 'pending', ?)", (guild_id, discord_id, day, now_iso())).lastrowid
+    except sqlite3.IntegrityError:
+        raise AlreadyRequested from None
+
+
+def get_xp_request(conn, guild_id, request_id):
+    return conn.execute("SELECT * FROM xp_requests WHERE id = ? AND guild_id = ?",
+                        (request_id, guild_id)).fetchone()
+
+
+def close_xp_request(conn, guild_id, request_id, status, staff_id):
+    """pending -> approved/denied. False if already closed."""
+    with conn:
+        return conn.execute("UPDATE xp_requests SET status = ?, reviewed_by = ?, reviewed_at = ? "
+                            "WHERE id = ? AND guild_id = ? AND status = 'pending'",
+                            (status, staff_id, now_iso(), request_id, guild_id)).rowcount == 1
+
+
+def xp_pending(conn, guild_id, day=None):
+    """Discord ids with a pending request, on `day` or on any day."""
+    sql = "SELECT discord_id FROM xp_requests WHERE guild_id = ? AND status = 'pending'"
+    return {r[0] for r in conn.execute(sql + (" AND day_utc = ?" if day else ""), (guild_id, *([day] if day else [])))}

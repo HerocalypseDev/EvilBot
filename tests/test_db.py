@@ -153,3 +153,37 @@ def test_next_boss(conn):
     db.add_boss(conn, G, "2026-10-22T14:00:00+00:00")
     assert db.next_boss(conn, G, "2026-10-22T13:00:00+00:00")["boss_time"] == "2026-10-22T14:00:00+00:00"
     assert db.next_boss(conn, G, "2026-10-22T14:00:00+00:00") is None  # started: not next any more
+
+
+def test_xp_week_gains_gaps_and_caps(conn):
+    mon, tue, wed, thu = "2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29"
+    assert db.week_start("2026-11-01") == mon and db.week_start(mon) == mon
+    db.xp_set(conn, G, A, mon, 9, total=1500)
+    db.xp_set(conn, G, A, wed, 9, total=4000)  # Tuesday not logged: Wednesday gets the rise since Monday
+    week = db.xp_week(conn, G, A, thu)
+    assert [(d["gain"], d["total"], d["cap"]) for d in week[:3]] == [(1500, 1500, 1500), (None, None, None),
+                                                                      (2500, 4000, 3000)]
+    with pytest.raises(db.XpInvalid) as bad:
+        db.xp_set(conn, G, A, thu, 9, total=3999)  # below Wednesday
+    assert bad.value.args == (thu, -1, 1500)
+    with pytest.raises(db.XpInvalid):
+        db.xp_set(conn, G, A, thu, 9, total=5501)  # over the cap
+    with pytest.raises(db.XpInvalid):
+        db.xp_set(conn, G, A, tue, 9, total=4100)  # makes Wednesday negative
+    assert db.xp_week(conn, G, A, mon)[1]["gain"] is None  # failed logs saved nothing
+    db.xp_set(conn, G, A, mon, 9, gain=1500)  # approved request: a gain, not a total
+    db.xp_set(conn, G, A, tue, 9, total=2600)  # re-logging a day replaces it
+    assert [d["gain"] for d in db.xp_week(conn, G, A, mon)[:3]] == [1500, 1100, 1400]
+    assert db.xp_gains(conn, G, tue) == {A: 1100}
+    assert db.xp_delete(conn, G, A, tue) and not db.xp_delete(conn, G, A, tue)
+    assert db.xp_week(conn, G, A, "2026-11-02")[0]["gain"] is None  # new week starts empty
+
+
+def test_xp_requests(conn):
+    rid = db.xp_request(conn, G, A, DAY)
+    with pytest.raises(db.AlreadyRequested):
+        db.xp_request(conn, G, A, DAY)
+    assert db.xp_pending(conn, G) == {A} and db.xp_pending(conn, G, "2026-10-23") == set()
+    assert db.close_xp_request(conn, G, rid, "approved", 9)
+    assert not db.close_xp_request(conn, G, rid, "denied", 9)  # already closed
+    assert db.get_xp_request(conn, G, rid)["status"] == "approved" and db.xp_pending(conn, G) == set()
