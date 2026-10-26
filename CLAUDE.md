@@ -30,6 +30,7 @@ Project: Discord bot. Stack: Python (discord.py, SQLite, pytest).
 - Commit and push after each numbered step of a plan, once that step passes its check.
 - Commit messages: one simple plain sentence describing the step. Example: `Add dice command to bot.`
 - Commit messages must not include `Co-Authored-By`, `Claude-Session`, `Generated with`, or any other AI attribution lines.
+- Every new update (feature or fix) bumps `VERSION` in `config.py` to a new version number, in the same commit.
 - Do not commit or push partial or failing work.
 - Do not rewrite history or force-push.
 
