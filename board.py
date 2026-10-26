@@ -62,6 +62,13 @@ def next_reset_ts(now=None):
     return int(midnight.timestamp())
 
 
+def next_week_ts(now=None):
+    """Next Monday 00:00 UTC, when weekly XP goes back to 0."""
+    now = now or datetime.now(timezone.utc)
+    monday = (now + timedelta(days=7 - now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    return int(monday.timestamp())
+
+
 def streak(days, today):
     """Days in a row with a donation, up to today. A streak still counts while today is not logged yet."""
     d = date.fromisoformat(today)
@@ -402,3 +409,11 @@ def missed_in_row(conn, guild_id, tracked, now, count):
     igns = db.get_igns(conn, guild_id)
     names = [igns[i] for i, _ in tracked if i in igns and i not in seen] if ids else []
     return len(ids), sorted(names, key=str.lower)
+
+
+def xp_day(conn, guild_id, tracked, day):
+    """Linked tracked members' XP on `day`: [(discord_id, discord name, ign, gain or None)], most XP first,
+    then the members with no log."""
+    igns, gains = db.get_igns(conn, guild_id), db.xp_gains(conn, guild_id, day)
+    rows = [(i, name, igns[i], gains.get(i)) for i, name in tracked if i in igns]
+    return sorted(rows, key=lambda r: (r[3] is None, -(r[3] or 0), r[2].lower()))

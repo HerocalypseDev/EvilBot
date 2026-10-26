@@ -584,6 +584,12 @@ def xp_request(conn, guild_id, discord_id, day):
         raise AlreadyRequested from None
 
 
+def delete_xp_request(conn, guild_id, request_id):
+    """For a request whose card could not be posted, so the member can try again."""
+    with conn:
+        conn.execute("DELETE FROM xp_requests WHERE id = ? AND guild_id = ?", (request_id, guild_id))
+
+
 def get_xp_request(conn, guild_id, request_id):
     return conn.execute("SELECT * FROM xp_requests WHERE id = ? AND guild_id = ?",
                         (request_id, guild_id)).fetchone()

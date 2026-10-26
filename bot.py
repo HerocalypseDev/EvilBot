@@ -20,7 +20,7 @@ import boss
 import db
 import reminders
 from config import (BACKUP_HOUR_UTC, DATA_PAGE, IGN_MAX, IGN_MIN, MEMBER_ROLE_NAME,
-                    RECENT_DONORS, REMINDER_MINUTES, VERSION)
+                    RECENT_DONORS, REMINDER_MINUTES, VERSION, XP_CAP)
 
 log = logging.getLogger("evil")
 STARTED = datetime.now(timezone.utc)
@@ -503,6 +503,8 @@ class Bot(commands.Bot):
         self.add_view(AttendView())
         self.add_view(BossPollView())
         self.add_view(LinkRequestView())
+        self.add_view(XpPanelView())
+        self.add_view(XpRequestView())
         for key in [*DATA_SECTIONS, *ATTEND_SECTIONS]:
             self.add_view(DataView(key))
         await self.tree.sync()
@@ -797,6 +799,9 @@ async def tick():
                 await boss_tick(guild, row, now)
             if row["attend_channel_id"]:
                 await attend_tick(guild, row, now)
+            if row["xp_channel_id"] and _xp_seen.get(guild.id) != today:  # new UTC day, or just started
+                _xp_seen[guild.id] = today
+                await refresh_xp_panel(guild)
             await post_weekly_leaderboard(guild, row, now)
             await post_monthly(guild, row, now)
             if row["board_day"] != today:
@@ -1740,6 +1745,176 @@ async def boss_missed(interaction: discord.Interaction, count: app_commands.Rang
         header += f" Only {checked} bosses so far."
     await send_text(interaction, header, [discord.utils.escape_markdown(n) for n in names] or ["Nobody."],
                     "boss_missed.txt")
+
+
+# --- XP: officers log each member's weekly total; members press I hit cap for an officer to approve ---
+
+_xp_lock = asyncio.Lock()
+_xp_seen = {}  # guild_id -> UTC day the XP panel last showed
+
+
+def xp_rows(guild, row, day):
+    return board.xp_day(bot.db, guild.id, tracked_members(guild, row["member_role_id"]), day)
+
+
+def xp_invalid_text(error):
+    day, gain, cap = error.args
+    return f"That would make {day} (UTC) a gain of **{gain:,}** XP. It must be from 0 to {cap:,}."
+
+
+def xp_panel_embed(guild, rows):
+    capped = [discord.utils.escape_markdown(ign) for _, _, ign, gain in rows if gain is not None and gain >= XP_CAP]
+    embed = discord.Embed(title="Guild XP",
+                          description=f"Daily cap: **{XP_CAP:,}** XP. The day resets <t:{board.next_reset_ts()}:t>, "
+                                      f"weekly XP goes back to 0 <t:{board.next_week_ts()}:R>.\n"
+                                      "Hit the cap today? Press **I hit cap** and an officer approves it. "
+                                      "Officers log everyone else.")
+    embed.add_field(name=f"Hit cap today ({len(capped)} of {len(rows)})",
+                    value=board.join_capped(capped, sep="\n") or "Nobody yet.", inline=False)
+    return brand(embed, guild, "Shows approved logs only")
+
+
+async def refresh_xp_panel(guild):
+    """Update the XP panel. If something was posted below it, move it to the bottom of the channel."""
+    async with _xp_lock:
+        row = db.get_guild(bot.db, guild.id)
+        channel = row and row["xp_channel_id"] and guild.get_channel(row["xp_channel_id"])
+        if not channel:
+            return
+        embed = xp_panel_embed(guild, xp_rows(guild, row, db.today_utc()))
+        old = row["xp_message_id"] and channel.get_partial_message(row["xp_message_id"])
+        try:
+            if old and channel.last_message_id == old.id:
+                return await old.edit(embed=embed, view=XpPanelView())
+            if old:
+                try:
+                    await old.delete()
+                except discord.NotFound:
+                    pass
+            new = await channel.send(embed=embed, view=XpPanelView())
+            db.save_guild(bot.db, guild.id, xp_message_id=new.id)
+        except discord.HTTPException as e:
+            log.warning("XP panel refresh failed in guild %s: %s", guild.id, e)
+
+
+class XpPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="I hit cap", style=discord.ButtonStyle.green, custom_id="xp_cap")
+    async def hit_cap(self, interaction, button):
+        row = db.get_guild(bot.db, interaction.guild_id)
+        if not row or not row["xp_review_channel_id"]:
+            return await interaction.response.send_message("XP logging is not set up yet.", ephemeral=True)
+        if not interaction.user.get_role(row["member_role_id"]):
+            return await interaction.response.send_message("Only guild members can log XP.", ephemeral=True)
+        ign = db.get_ign(bot.db, interaction.guild_id, interaction.user.id)
+        if not ign:
+            return await interaction.response.send_message(
+                "Ask an officer to link your in-game name first.", ephemeral=True)
+        channel = interaction.guild.get_channel(row["xp_review_channel_id"])
+        if not channel:
+            return await interaction.response.send_message(
+                "Could not reach the officers. Ask an officer to log your XP.", ephemeral=True)
+        day = db.today_utc()
+        try:
+            request_id = db.xp_request(bot.db, interaction.guild_id, interaction.user.id, day)
+        except db.AlreadyRequested:
+            return await interaction.response.send_message("You already sent a request today.", ephemeral=True)
+        logged = db.xp_gains(bot.db, interaction.guild_id, day).get(interaction.user.id)
+        embed = discord.Embed(title="XP request: hit cap", description=f"Approve to log **{XP_CAP:,}** XP for the day.")
+        embed.add_field(name="Member", value=interaction.user.mention)
+        embed.add_field(name="In-game name", value=discord.utils.escape_markdown(ign))
+        embed.add_field(name="Day (UTC)", value=day)
+        embed.add_field(name="Logged now", value=f"{logged:,} XP" if logged is not None else "Not logged")
+        embed.add_field(name="Request", value=str(request_id))
+        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
+        try:
+            await channel.send(embed=brand(embed, footer="Requested"), view=XpRequestView())
+        except discord.HTTPException as e:
+            db.delete_xp_request(bot.db, interaction.guild_id, request_id)
+            log.warning("XP request post failed in guild %s: %s", interaction.guild_id, e)
+            return await interaction.response.send_message(
+                "Could not reach the officers. Ask an officer to log your XP.", ephemeral=True)
+        await interaction.response.send_message(
+            f"Request sent for {day} (UTC). You get a DM when an officer answers.", ephemeral=True)
+
+
+class XpRequestView(discord.ui.View):
+    """Approve / Deny under an I hit cap request in the officer channel. The request id is read back from the
+    embed, so the buttons keep working after a restart."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @staticmethod
+    def request(interaction):
+        fields = {f.name: f.value for f in interaction.message.embeds[0].fields}
+        return db.get_xp_request(bot.db, interaction.guild_id, int(fields["Request"]))
+
+    @discord.ui.button(label="Approve", style=discord.ButtonStyle.green, custom_id="xpreq_approve")
+    async def approve(self, interaction, button):
+        if not await require_staff(interaction):
+            return
+        req = self.request(interaction)
+        if not req or req["status"] != "pending":
+            return await interaction.response.send_message("This request was already answered.", ephemeral=True)
+        try:
+            db.xp_set(bot.db, interaction.guild_id, req["discord_id"], req["day_utc"], interaction.user.id,
+                      gain=XP_CAP)
+        except db.XpInvalid as e:
+            return await interaction.response.send_message(
+                f"{xp_invalid_text(e)} Fix that day with /xp_log, then approve again.", ephemeral=True)
+        db.close_xp_request(bot.db, interaction.guild_id, req["id"], "approved", interaction.user.id)
+        await LinkRequestView.close(self, interaction, req["discord_id"], f"Approved by {interaction.user.mention}",
+                                    f"Your hit cap request for {req['day_utc']} (UTC) in {interaction.guild.name} "
+                                    f"was approved: {XP_CAP:,} XP logged.")
+        await audit(interaction, f"approved the hit cap request of <@{req['discord_id']}> for {req['day_utc']}.")
+        await refresh_xp_panel(interaction.guild)
+
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.secondary, custom_id="xpreq_deny")
+    async def deny(self, interaction, button):
+        if not await require_staff(interaction):
+            return
+        req = self.request(interaction)
+        if not req or not db.close_xp_request(bot.db, interaction.guild_id, req["id"], "denied", interaction.user.id):
+            return await interaction.response.send_message("This request was already answered.", ephemeral=True)
+        await LinkRequestView.close(self, interaction, req["discord_id"], f"Denied by {interaction.user.mention}",
+                                    f"Your hit cap request for {req['day_utc']} (UTC) in {interaction.guild.name} "
+                                    "was denied. Ask an officer why.")
+        await audit(interaction, f"denied the hit cap request of <@{req['discord_id']}> for {req['day_utc']}.")
+
+
+@bot.tree.command(name="xp_setup", description="Staff: post the XP panel and set the officer channel for XP requests.")
+@app_commands.guild_only()
+@app_commands.describe(xp_channel="Where members see the panel and get pinged",
+                       review_channel="Private officer channel for I hit cap requests")
+async def xp_setup(interaction: discord.Interaction, xp_channel: discord.TextChannel,
+                   review_channel: discord.TextChannel):
+    if not await require_staff(interaction):
+        return
+    row = db.get_guild(bot.db, interaction.guild_id)
+    if not row:
+        return await interaction.response.send_message("Run /setup first.", ephemeral=True)
+    for channel in (xp_channel, review_channel):
+        perms = channel.permissions_for(interaction.guild.me)
+        if not (perms.view_channel and perms.send_messages and perms.embed_links):
+            return await interaction.response.send_message(
+                f"I cannot post in {channel.mention}. Give the bot View Channel, Send Messages and Embed Links "
+                "there, then run /xp_setup again.", ephemeral=True)
+    old = row["xp_channel_id"] and row["xp_message_id"] and interaction.guild.get_channel(row["xp_channel_id"])
+    if old and old.id != xp_channel.id:  # moved: the old panel would keep a working button
+        try:
+            await old.get_partial_message(row["xp_message_id"]).delete()
+        except discord.HTTPException:
+            pass
+        db.save_guild(bot.db, interaction.guild_id, xp_message_id=None)
+    db.save_guild(bot.db, interaction.guild_id, xp_channel_id=xp_channel.id, xp_review_channel_id=review_channel.id)
+    await interaction.response.send_message(
+        f"XP panel in {xp_channel.mention}, requests go to {review_channel.mention}. Keep that one private to "
+        "officers.", ephemeral=True)
+    await audit(interaction, f"set the XP channel to {xp_channel.mention} and XP requests to {review_channel.mention}.")
+    await refresh_xp_panel(interaction.guild)
 
 
 def command_lines():
