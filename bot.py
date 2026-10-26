@@ -737,6 +737,22 @@ async def post_weekly_leaderboard(guild, row, now):
     await refresh_board(guild)  # the post pushed the board up: move it back to the bottom
 
 
+async def post_xp_ping(guild, row, now):
+    """From 01:00 UTC: ping, in the XP channel, everyone under the cap yesterday, once per day."""
+    day = (now.date() - timedelta(days=1)).isoformat()
+    if now.hour < 1 or not db.claim_post(bot.db, guild.id, "xp_ping", day):
+        return
+    channel = guild.get_channel(row["xp_channel_id"])
+    under = [(i, gain) for i, _, _, gain in xp_rows(guild, row, day) if gain is None or gain < XP_CAP]
+    if not channel or not under:
+        return
+    for group in reminders.chunks(under, 40):
+        await channel.send(f"Under {XP_CAP:,} XP on {day} (UTC):\n" + "\n".join(
+            f"<@{i}> · " + (f"{gain:,} XP" if gain is not None else "not logged") for i, gain in group))
+    log.info("XP ping posted for %s in guild %s", day, guild.id)
+    await refresh_xp_panel(guild)  # the ping pushed the panel up: move it back to the bottom
+
+
 async def post_monthly(guild, row, now):
     """On the 1st (UTC): last month's report and CSV in the staff channel, and the attendance
     leaderboard in the attendance channel. Once per month."""
@@ -802,6 +818,8 @@ async def tick():
             if row["xp_channel_id"] and _xp_seen.get(guild.id) != today:  # new UTC day, or just started
                 _xp_seen[guild.id] = today
                 await refresh_xp_panel(guild)
+            if row["xp_channel_id"]:
+                await post_xp_ping(guild, row, now)
             await post_weekly_leaderboard(guild, row, now)
             await post_monthly(guild, row, now)
             if row["board_day"] != today:
@@ -1910,6 +1928,7 @@ async def xp_setup(interaction: discord.Interaction, xp_channel: discord.TextCha
             pass
         db.save_guild(bot.db, interaction.guild_id, xp_message_id=None)
     db.save_guild(bot.db, interaction.guild_id, xp_channel_id=xp_channel.id, xp_review_channel_id=review_channel.id)
+    db.claim_post(bot.db, interaction.guild_id, "xp_ping", db.yesterday_utc())  # no ping for a day before setup
     await interaction.response.send_message(
         f"XP panel in {xp_channel.mention}, requests go to {review_channel.mention}. Keep that one private to "
         "officers.", ephemeral=True)
