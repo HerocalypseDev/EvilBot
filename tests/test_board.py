@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta, timezone
 import db
 from board import (attend_board_data, bar, dashboard_stats, best_streak, member_card, streak, top_streaks, attend_data_sections, attend_report, board_data, boss_lists, member_day,
                    data_sections, day_lists, join_capped, link_lines, log_all, member_ids, missed_in_row, next_reset_ts, next_week_ts, not_donated,
-                   monthly_csv, monthly_report, pack_lines, paginate, short, weekly_leaderboard, xp_day)
+                   monthly_csv, monthly_report, pack_lines, paginate, short, weekly_leaderboard, xp_cap_counts, xp_day, xp_week_totals)
 
 G, DAY, YDAY = 1, "2026-10-22", "2026-10-21"
 
@@ -283,6 +283,9 @@ def test_xp_day_and_week_reset():
     db.xp_set(conn, G, 3, DAY, 9, gain=1500)
     tracked = [(1, "ann"), (2, "bob"), (3, "cid"), (4, "dee")]  # dee is not linked: left out
     assert xp_day(conn, G, tracked, DAY) == [(3, "cid", "Cid", 1500), (2, "bob", "Bob", 900), (1, "ann", "Ann", None)]
+    assert xp_week_totals(conn, G, tracked, DAY) == {1: 0, 2: 900, 3: 1500}
+    assert xp_cap_counts(conn, G, tracked, DAY) == [(date(2026, 10, 19), 0), (date(2026, 10, 20), 0),
+                                                    (date(2026, 10, 21), 0), (date(2026, 10, 22), 1)]
     sunday_night = datetime(2026, 10, 25, 23, 59, tzinfo=timezone.utc)
     assert next_week_ts(sunday_night) == int(datetime(2026, 10, 26, tzinfo=timezone.utc).timestamp())
     assert next_week_ts(sunday_night + timedelta(minutes=1)) == int(datetime(2026, 11, 2, tzinfo=timezone.utc).timestamp())

@@ -7,7 +7,7 @@ from discord.utils import escape_markdown
 
 import boss
 import db
-from config import RECENT_DONORS
+from config import RECENT_DONORS, XP_CAP
 
 
 def short(text, width=16):
@@ -417,3 +417,22 @@ def xp_day(conn, guild_id, tracked, day):
     igns, gains = db.get_igns(conn, guild_id), db.xp_gains(conn, guild_id, day)
     rows = [(i, name, igns[i], gains.get(i)) for i, name in tracked if i in igns]
     return sorted(rows, key=lambda r: (r[3] is None, -(r[3] or 0), r[2].lower()))
+
+
+def xp_week_totals(conn, guild_id, tracked, day):
+    """{discord_id: weekly total so far} for linked tracked members, in the week holding `day`."""
+    igns = db.get_igns(conn, guild_id)
+    totals = {}
+    for i, _ in tracked:
+        if i in igns:
+            logged = [d["total"] for d in db.xp_week(conn, guild_id, i, day) if d["total"] is not None]
+            totals[i] = logged[-1] if logged else 0
+    return totals
+
+
+def xp_cap_counts(conn, guild_id, tracked, today):
+    """[(date, members at the cap)] from Monday to today."""
+    start = date.fromisoformat(db.week_start(today))
+    days = [start + timedelta(days=k) for k in range((date.fromisoformat(today) - start).days + 1)]
+    return [(d, sum(g is not None and g >= XP_CAP for *_, g in xp_day(conn, guild_id, tracked, d.isoformat())))
+            for d in days]

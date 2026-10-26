@@ -1073,6 +1073,22 @@ async def me(interaction: discord.Interaction):
     if card["next_badge"]:
         to_go, name = card["next_badge"]
         embed.add_field(name="Next badge", value=f"{name} in **{to_go}** day(s)")
+    if row["xp_channel_id"]:
+        today = db.today_utc()
+        week = [d for d in db.xp_week(bot.db, interaction.guild_id, user.id, today) if d["day"] <= today]
+        totals = board.xp_week_totals(bot.db, interaction.guild_id,
+                                      tracked_members(interaction.guild, row["member_role_id"]), today)
+        mine = totals.get(user.id, 0)
+        embed.add_field(name="XP this week", value=f"**{mine:,}** XP · resets <t:{board.next_week_ts()}:R>")
+        embed.add_field(name="XP today", value=f"**{week[-1]['gain']:,}**" if week[-1]["gain"] is not None
+                        else "Not logged")
+        embed.add_field(name="XP rank this week", value=f"**#{1 + sum(t > mine for t in totals.values())}** of "
+                        f"{len(totals)} · hit cap {sum(d['gain'] is not None and d['gain'] >= XP_CAP for d in week)}"
+                        f" of {len(week)} days")
+        embed.add_field(name="XP by day (✓ = hit cap)", inline=False, value="```\n" + "\n".join(
+            f"{datetime.strptime(d['day'], '%Y-%m-%d'):%a}  "
+            + (f"{d['gain']:>6,}{' ✓' if d['gain'] >= XP_CAP else ''}" if d["gain"] is not None else "     -")
+            for d in week) + "\n```")
     await interaction.response.send_message(embed=brand(embed, footer="Days and ranks use the UTC day"),
                                             ephemeral=True)
 
@@ -2136,6 +2152,17 @@ async def dashboard(interaction: discord.Interaction):
         problems.append(f"**Linked but no {MEMBER_ROLE_NAME} role ({len(stats['stale_links'])}):** "
                         + board.join_capped([esc(n) for n in stats["stale_links"]], 300))
     embed.add_field(name="Roster problems", inline=False, value="\n".join(problems) or "None.")
+    if row["xp_channel_id"]:
+        rows = xp_rows(guild, row, db.today_utc())
+        capped = sum(g is not None and g >= XP_CAP for *_, g in rows)
+        missing = sum(g is None for *_, g in rows)
+        embed.add_field(name="XP today", value=f"Hit cap **{capped}** · under **{len(rows) - capped - missing}** · "
+                        f"not logged **{missing}**\n`{board.bar(capped, len(rows))}`")
+        embed.add_field(name="XP requests pending", value=f"**{len(db.xp_pending(bot.db, guild.id))}** in "
+                        f"<#{row['xp_review_channel_id']}>")
+        counts = board.xp_cap_counts(bot.db, guild.id, tracked, db.today_utc())
+        embed.add_field(name="XP this week (hit cap)", inline=False, value="```\n" + "\n".join(
+            f"{d:%a %d}  {board.bar(n, len(rows))}  {n}" for d, n in counts) + "\n```")
 
     db_path = Path(os.getenv("DB_PATH", "donations.db"))
     size = f"{db_path.stat().st_size / 1024:,.0f} KB" if db_path.is_file() else "unknown"
@@ -2146,7 +2173,8 @@ async def dashboard(interaction: discord.Interaction):
     channels = [("Panel", row["panel_channel_id"]), ("Boss polls", row["boss_channel_id"]),
              ("Attendance", row["attend_channel_id"]), ("Data", row["data_channel_id"]),
              ("Attendance data", row["attend_data_channel_id"]), ("Staff", row["staff_channel_id"]),
-             ("Welcome", row["welcome_channel_id"])]
+             ("Welcome", row["welcome_channel_id"]), ("XP", row["xp_channel_id"]),
+             ("XP requests", row["xp_review_channel_id"])]
     embed.add_field(name="Channels", inline=False, value="\n".join(
         f"{name}: {f'<#{cid}>' if cid else 'not set'}" for name, cid in channels))
     await interaction.response.send_message(embed=brand(embed, guild, f"Version {VERSION}"), view=DashboardView(),
