@@ -289,3 +289,65 @@ def test_loa_check_and_delete_request(conn):
     db.approve_loa(conn, G, approved, 9, today)
     db.delete_loa_request(conn, G, approved)  # only pending rows can be deleted
     assert db.get_loa(conn, G, approved)["status"] == "approved"
+
+
+def test_loa_end_cancels_before_start_and_ends_today(conn):
+    today = "2026-10-27"
+    later = db.grant_loa(conn, G, A, "trip", 3, today, 9)
+    now_row = db.end_loa(conn, G, later, today)  # started today
+    assert (now_row["status"], now_row["end_day"], now_row["notified_at"] is not None) == ("ended", "2026-10-26", True)
+    assert db.loa_active_on(conn, G, today) == {}  # today is a normal day again
+    assert db.loa_due_end(conn, G, "2026-10-28") == []  # the caller sends the ping, not the tick
+    assert db.end_loa(conn, G, later, today) is None  # only once
+    with pytest.raises(db.LoaCooldown):  # the wait still applies, counted from the day they came back
+        db.loa_check(conn, G, A, today)
+    db.loa_check(conn, G, A, "2026-11-03")
+    future = db.loa_request(conn, G, B, "trip", 2, "2026-10-30", today)
+    db.approve_loa(conn, G, future, 9, today)
+    assert db.end_loa(conn, G, future, today)["status"] == "cancelled"  # never started
+    db.loa_check(conn, G, B, today)  # a cancelled one starts no cooldown
+
+
+def test_loa_extend_is_capped(conn):
+    today = "2026-10-27"
+    loa = db.grant_loa(conn, G, A, "trip", 10, today, 9)
+    row = db.extend_loa(conn, G, loa, 4, today)
+    assert (row["end_day"], row["days"]) == ("2026-11-09", 14)
+    with pytest.raises(db.LoaInvalid) as e:
+        db.extend_loa(conn, G, loa, 1, today)
+    assert "add at most 0" in e.value.args[0]
+    short = db.grant_loa(conn, G, B, "trip", 5, today, 9)
+    with pytest.raises(db.LoaInvalid) as e:
+        db.extend_loa(conn, G, short, 10, today)
+    assert "add at most 9" in e.value.args[0]
+    assert db.extend_loa(conn, G, 999, 1, today) is None
+    assert db.extend_loa(conn, G, loa, 1, "2026-12-01") is None  # already over
+
+
+def test_loa_grant_rules(conn):
+    today = "2026-10-27"
+    for days in (0, 15):
+        with pytest.raises(db.LoaInvalid):
+            db.grant_loa(conn, G, A, "x", days, today, 9)
+    first = db.grant_loa(conn, G, A, "trip", 2, today, 9)
+    row = db.get_loa(conn, G, first)
+    assert (row["status"], row["start_day"], row["end_day"], row["reviewed_by"]) == ("approved", today, "2026-10-28", 9)
+    with pytest.raises(db.LoaBusy):
+        db.grant_loa(conn, G, A, "again", 2, today, 9)
+    db.grant_loa(conn, G, A, "again", 2, "2026-10-29", 9)  # staff skip the cooldown
+    db.loa_request(conn, G, B, "form", 1, today, today)
+    with pytest.raises(db.LoaBusy):
+        db.grant_loa(conn, G, B, "x", 1, today, 9)  # a request is waiting: answer it first
+
+
+def test_loa_list_current_and_leave(conn):
+    today = "2026-10-27"
+    running = db.grant_loa(conn, G, A, "trip", 2, today, 9)
+    pending = db.loa_request(conn, G, B, "form", 3, "2026-10-29", today)
+    assert [r["id"] for r in db.loa_list(conn, G, today)] == [running, pending]
+    assert db.loa_current(conn, G, A, today)["id"] == running
+    assert db.loa_current(conn, G, B, today) is None  # pending is not approved yet
+    assert db.leave_loa(conn, G, B, today) and db.get_loa(conn, G, pending)["status"] == "cancelled"
+    assert db.leave_loa(conn, G, A, today) and db.get_loa(conn, G, running)["status"] == "ended"
+    assert not db.leave_loa(conn, G, A, today)
+    assert db.loa_list(conn, G, today) == []

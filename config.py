@@ -18,4 +18,4 @@ XP_CAP = 1500  # most XP a member can gain in one UTC day
 LOA_MAX_DAYS = 14  # longest leave a member can ask for
 LOA_COOLDOWN_DAYS = 7  # wait after a leave ends before the next one
 LOA_MAX_AHEAD_DAYS = 7  # furthest start date a member can pick
-VERSION = "2.3.4"  # bump on each upload, so /help and the startup log show which code is live
+VERSION = "2.4.0"  # bump on each upload, so /help and the startup log show which code is live

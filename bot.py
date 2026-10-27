@@ -534,6 +534,8 @@ class Bot(commands.Bot):
 
     async def on_member_remove(self, member):
         """A member who leaves is unlinked, so their in-game name is free again. Their history stays."""
+        if db.leave_loa(self.db, member.guild.id, member.id, db.today_utc()):
+            await refresh_loa_boards(member.guild)
         ign = db.get_ign(self.db, member.guild.id, member.id)
         if ign and db.unlink(self.db, member.guild.id, member.id):
             log.info("Unlinked %s (%s) after leaving guild %s", member.id, ign, member.guild.id)
@@ -2055,6 +2057,22 @@ async def swap_loa_role(guild, row, member_id, on):
         return str(e)
 
 
+async def finish_loa(guild, row, loa):
+    """Give the member role back, then ping the member in the LOA channel and in a DM."""
+    if error := await swap_loa_role(guild, row, loa["discord_id"], on=False):
+        await staff_post(guild, f"Could not give <@{loa['discord_id']}> the member role back: {error}. "
+                                "Please do it by hand.")
+    text = f"<@{loa['discord_id']}> your LOA is over. Time to go back to grinding!"
+    channel = row["loa_channel_id"] and guild.get_channel(row["loa_channel_id"])
+    for target, message in ((channel, text), (guild.get_member(loa["discord_id"]), f"{text} ({guild.name})")):
+        try:
+            if target:
+                await target.send(message)
+        except discord.HTTPException as e:  # closed DMs, or no access to the channel
+            log.warning("LOA end notice failed for %s in guild %s: %s", loa["discord_id"], guild.id, e)
+    log.info("LOA %s ended in guild %s", loa["id"], guild.id)
+
+
 async def loa_tick(guild, row, today):
     """Swap roles on the first LOA day. On the day after the last, swap back and ping the member in the LOA
     channel and in a DM. Each step is claimed in the database first, so a restart never repeats it."""
@@ -2069,22 +2087,112 @@ async def loa_tick(guild, row, today):
         if not db.claim_loa_end(bot.db, loa["id"]):
             continue
         changed = True
-        if error := await swap_loa_role(guild, row, loa["discord_id"], on=False):
-            await staff_post(guild, f"Could not give <@{loa['discord_id']}> the member role back: {error}. "
-                                    "Please do it by hand.")
-        text = f"<@{loa['discord_id']}> your LOA is over. Time to go back to grinding!"
-        channel = row["loa_channel_id"] and guild.get_channel(row["loa_channel_id"])
-        member = guild.get_member(loa["discord_id"])
-        for target, message in ((channel, text), (member, f"{text} ({guild.name})")):
-            try:
-                if target:
-                    await target.send(message)
-            except discord.HTTPException as e:  # closed DMs, or no access to the channel
-                log.warning("LOA end notice failed for %s in guild %s: %s", loa["discord_id"], guild.id, e)
-        log.info("LOA %s ended in guild %s", loa["id"], guild.id)
+        await finish_loa(guild, row, loa)
     if changed:
-        for refresh in (refresh_loa_panel, refresh_board, refresh_attendance, refresh_xp_panel):
-            await refresh(guild)
+        await refresh_loa_boards(guild)
+
+
+async def refresh_loa_boards(guild):
+    """Every board that lists or leaves out members on LOA."""
+    for refresh in (refresh_loa_panel, refresh_board, refresh_attendance, refresh_xp_panel):
+        await refresh(guild)
+
+
+async def dm_member(member, text):
+    try:
+        if member:
+            await member.send(text)
+    except discord.HTTPException:  # DMs closed: the member sees it on the LOA board instead
+        pass
+
+
+@bot.tree.command(name="loa_end", description="Staff: end a member's LOA now. They get the member role back and a ping.")
+@app_commands.guild_only()
+async def loa_end(interaction: discord.Interaction, member: discord.Member):
+    if not await require_staff(interaction):
+        return
+    row = db.get_guild(bot.db, interaction.guild_id)
+    if not row or not row["loa_role_id"]:
+        return await interaction.response.send_message("Run /loa_setup first.", ephemeral=True)
+    today = db.today_utc()
+    current = db.loa_current(bot.db, interaction.guild_id, member.id, today)
+    loa = current and db.end_loa(bot.db, interaction.guild_id, current["id"], today)
+    if not loa:
+        return await interaction.response.send_message(f"{member.display_name} has no LOA to end.", ephemeral=True)
+    await interaction.response.send_message(
+        f"Ended the LOA of {member.mention}." if loa["status"] == "ended" else
+        f"Cancelled the LOA of {member.mention}: it had not started.", ephemeral=True)
+    await audit(interaction, f"ended the LOA of {member.mention}.")
+    if loa["status"] == "ended":
+        await finish_loa(interaction.guild, row, loa)
+    await refresh_loa_boards(interaction.guild)
+
+
+@bot.tree.command(name="loa_extend", description="Staff: add days to a member's LOA (an LOA lasts at most "
+                                                f"{LOA_MAX_DAYS} days in all).")
+@app_commands.guild_only()
+@app_commands.describe(extra_days="Days to add after the last LOA day")
+async def loa_extend(interaction: discord.Interaction, member: discord.Member,
+                     extra_days: app_commands.Range[int, 1, LOA_MAX_DAYS]):
+    if not await require_staff(interaction):
+        return
+    today = db.today_utc()
+    current = db.loa_current(bot.db, interaction.guild_id, member.id, today)
+    try:
+        loa = current and db.extend_loa(bot.db, interaction.guild_id, current["id"], extra_days, today)
+    except db.LoaInvalid as e:
+        return await interaction.response.send_message(e.args[0], ephemeral=True)
+    if not loa:
+        return await interaction.response.send_message(f"{member.display_name} has no LOA to extend.", ephemeral=True)
+    await interaction.response.send_message(
+        f"{member.mention}'s LOA now ends after {loa['end_day']} (UTC).", ephemeral=True)
+    await audit(interaction, f"extended the LOA of {member.mention} by {extra_days} day(s), to {loa['end_day']}.")
+    await dm_member(member, f"Your LOA in {interaction.guild.name} was extended. "
+                            f"The last day is now {loa['end_day']} (UTC).")
+    await refresh_loa_boards(interaction.guild)
+
+
+@bot.tree.command(name="loa_grant", description="Staff: start an LOA for a member today, with no form or wait.")
+@app_commands.guild_only()
+@app_commands.describe(days=f"1 to {LOA_MAX_DAYS}", reason="Why. Shown to staff only.")
+async def loa_grant(interaction: discord.Interaction, member: discord.Member,
+                    days: app_commands.Range[int, 1, LOA_MAX_DAYS], reason: str = "Granted by staff"):
+    if not await require_staff(interaction):
+        return
+    row = db.get_guild(bot.db, interaction.guild_id)
+    if not row or not row["loa_role_id"]:
+        return await interaction.response.send_message("Run /loa_setup first.", ephemeral=True)
+    if not db.get_ign(bot.db, interaction.guild_id, member.id):
+        return await interaction.response.send_message("Member has no linked IGN.", ephemeral=True)
+    try:
+        loa_id = db.grant_loa(bot.db, interaction.guild_id, member.id, reason, days, db.today_utc(),
+                              interaction.user.id)
+    except db.LoaBusy as e:
+        return await interaction.response.send_message(
+            f"{member.display_name} already has an LOA {'request waiting' if e.args[0] == 'pending' else 'running'}.",
+            ephemeral=True)
+    loa = db.get_loa(bot.db, interaction.guild_id, loa_id)
+    await interaction.response.send_message(
+        f"{member.mention} is on LOA from {loa['start_day']} to {loa['end_day']} (UTC).", ephemeral=True)
+    await audit(interaction, f"started an LOA for {member.mention}: {loa['start_day']} to {loa['end_day']}.")
+    await dm_member(member, f"Staff started an LOA for you in {interaction.guild.name}: {loa['start_day']} to "
+                            f"{loa['end_day']} (UTC days). You get a ping when it ends.")
+    await loa_tick(interaction.guild, row, db.today_utc())  # swap the roles now, not at the next minute
+
+
+@bot.tree.command(name="loa_list", description="Staff: members on LOA, and requests waiting for an answer.")
+@app_commands.guild_only()
+async def loa_list(interaction: discord.Interaction):
+    if not await require_staff(interaction):
+        return
+    today, esc = db.today_utc(), discord.utils.escape_markdown
+    lines = []
+    for r in db.loa_list(bot.db, interaction.guild_id, today):
+        ign = db.get_ign(bot.db, interaction.guild_id, r["discord_id"]) or "not linked"
+        state = "request waiting" if r["status"] == "pending" else "running" if r["start_day"] <= today else "starts later"
+        lines.append(f"<@{r['discord_id']}> ({esc(ign)}) · {state} · {r['start_day']} to {r['end_day']} (UTC) · "
+                     f"{esc(r['reason'][:100])}")
+    await send_text(interaction, f"**LOA** ({len(lines)})", lines or ["Nobody."], "loa_list.txt")
 
 
 # --- XP: officers log each member's weekly total; members press I hit cap for an officer to approve ---

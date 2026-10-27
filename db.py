@@ -673,9 +673,9 @@ def parse_loa(days_text, start_text, today):
     return days, start
 
 
-def loa_check(conn, guild_id, discord_id, today):
+def loa_check(conn, guild_id, discord_id, today, cooldown=True):
     """Raises LoaBusy if the member has an LOA pending or still running, LoaCooldown if the last one ended
-    less than LOA_COOLDOWN_DAYS ago."""
+    less than LOA_COOLDOWN_DAYS ago (unless cooldown is False)."""
     busy = conn.execute("SELECT status, end_day FROM loa WHERE guild_id = ? AND discord_id = ? AND "
                         "(status = 'pending' OR (status = 'approved' AND end_day >= ?))",
                         (guild_id, discord_id, today)).fetchone()
@@ -683,7 +683,7 @@ def loa_check(conn, guild_id, discord_id, today):
         raise LoaBusy(*(("pending", None) if busy["status"] == "pending" else ("active", busy["end_day"])))
     last = conn.execute("SELECT MAX(end_day) FROM loa WHERE guild_id = ? AND discord_id = ? "
                         "AND status IN ('approved','ended')", (guild_id, discord_id)).fetchone()[0]
-    if last and today < add_days(last, 1 + LOA_COOLDOWN_DAYS):
+    if cooldown and last and today < add_days(last, 1 + LOA_COOLDOWN_DAYS):
         raise LoaCooldown(add_days(last, 1 + LOA_COOLDOWN_DAYS))
 
 
@@ -774,3 +774,69 @@ def loa_days(conn, guild_id):
 
 def boss_day(conn, boss_id):
     return conn.execute("SELECT day_utc FROM bosses WHERE id = ?", (boss_id,)).fetchone()[0]
+
+
+def loa_current(conn, guild_id, discord_id, today):
+    """The member's approved LOA that is running or still to start, else None."""
+    return conn.execute("SELECT * FROM loa WHERE guild_id = ? AND discord_id = ? AND status = 'approved' "
+                        "AND end_day >= ? ORDER BY id DESC LIMIT 1", (guild_id, discord_id, today)).fetchone()
+
+
+def loa_list(conn, guild_id, today):
+    """Pending requests and approved LOAs that are running or still to start, soonest first."""
+    return conn.execute("SELECT * FROM loa WHERE guild_id = ? AND (status = 'pending' OR (status = 'approved' "
+                        "AND end_day >= ?)) ORDER BY start_day, id", (guild_id, today)).fetchall()
+
+
+def end_loa(conn, guild_id, loa_id, today):
+    """Staff end an approved LOA that has not finished. One that has not started is cancelled. Otherwise its last
+    day becomes yesterday and the end ping is marked as sent, because the caller sends it.
+    Returns the new row, or None if there is no such LOA."""
+    row = get_loa(conn, guild_id, loa_id)
+    if not row or row["status"] != "approved" or row["end_day"] < today:
+        return None
+    with conn:
+        if row["start_day"] > today:
+            conn.execute("UPDATE loa SET status = 'cancelled' WHERE id = ?", (loa_id,))
+        else:
+            conn.execute("UPDATE loa SET status = 'ended', end_day = ?, notified_at = ? WHERE id = ?",
+                         (add_days(today, -1), now_iso(), loa_id))
+    return get_loa(conn, guild_id, loa_id)
+
+
+def extend_loa(conn, guild_id, loa_id, extra, today):
+    """Add `extra` days to an approved LOA that has not finished. Raises LoaInvalid past LOA_MAX_DAYS in all.
+    Returns the new row, or None if there is no such LOA."""
+    row = get_loa(conn, guild_id, loa_id)
+    if not row or row["status"] != "approved" or row["end_day"] < today:
+        return None
+    have = (datetime.strptime(row["end_day"], "%Y-%m-%d") - datetime.strptime(row["start_day"], "%Y-%m-%d")).days + 1
+    if extra < 1 or have + extra > LOA_MAX_DAYS:
+        raise LoaInvalid(f"An LOA lasts at most {LOA_MAX_DAYS} days in all. This one has {have}, "
+                         f"so you can add at most {LOA_MAX_DAYS - have}.")
+    with conn:
+        conn.execute("UPDATE loa SET end_day = ?, days = ? WHERE id = ?",
+                     (add_days(row["end_day"], extra), have + extra, loa_id))
+    return get_loa(conn, guild_id, loa_id)
+
+
+def grant_loa(conn, guild_id, discord_id, reason, days, today, staff_id):
+    """Staff start an LOA today: no form, no approval, no cooldown. Raises LoaInvalid for days outside
+    1 to LOA_MAX_DAYS, LoaBusy if the member has one pending or running."""
+    if not 1 <= days <= LOA_MAX_DAYS:
+        raise LoaInvalid(f"Days must be from 1 to {LOA_MAX_DAYS}.")
+    loa_check(conn, guild_id, discord_id, today, cooldown=False)
+    with conn:
+        return conn.execute("INSERT INTO loa (guild_id, discord_id, reason, days, start_day, end_day, status, "
+                            "reviewed_by, created_at, reviewed_at) VALUES (?, ?, ?, ?, ?, ?, 'approved', ?, ?, ?)",
+                            (guild_id, discord_id, reason, days, today, add_days(today, days - 1), staff_id,
+                             now_iso(), now_iso())).lastrowid
+
+
+def leave_loa(conn, guild_id, discord_id, today):
+    """The member left the server: cancel their pending request and end their LOA. True if there was one."""
+    with conn:
+        cancelled = conn.execute("UPDATE loa SET status = 'cancelled' WHERE guild_id = ? AND discord_id = ? "
+                                 "AND status = 'pending'", (guild_id, discord_id)).rowcount
+    current = loa_current(conn, guild_id, discord_id, today)
+    return bool(cancelled or (current and end_loa(conn, guild_id, current["id"], today)))
