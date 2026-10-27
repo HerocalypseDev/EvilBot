@@ -673,8 +673,8 @@ def parse_loa(days_text, start_text, today):
     return days, start
 
 
-def loa_request(conn, guild_id, discord_id, reason, days, start_day, today):
-    """Open a pending LOA. Raises LoaBusy if one is pending or still running, LoaCooldown if the last one ended
+def loa_check(conn, guild_id, discord_id, today):
+    """Raises LoaBusy if the member has an LOA pending or still running, LoaCooldown if the last one ended
     less than LOA_COOLDOWN_DAYS ago."""
     busy = conn.execute("SELECT status, end_day FROM loa WHERE guild_id = ? AND discord_id = ? AND "
                         "(status = 'pending' OR (status = 'approved' AND end_day >= ?))",
@@ -685,11 +685,22 @@ def loa_request(conn, guild_id, discord_id, reason, days, start_day, today):
                         "AND status IN ('approved','ended')", (guild_id, discord_id)).fetchone()[0]
     if last and today < add_days(last, 1 + LOA_COOLDOWN_DAYS):
         raise LoaCooldown(add_days(last, 1 + LOA_COOLDOWN_DAYS))
+
+
+def loa_request(conn, guild_id, discord_id, reason, days, start_day, today):
+    """Open a pending LOA. Raises what loa_check raises."""
+    loa_check(conn, guild_id, discord_id, today)
     with conn:
         return conn.execute("INSERT INTO loa (guild_id, discord_id, reason, days, start_day, end_day, status, created_at) "
                             "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
                             (guild_id, discord_id, reason, days, start_day, add_days(start_day, days - 1),
                              now_iso())).lastrowid
+
+
+def delete_loa_request(conn, guild_id, loa_id):
+    """For a request whose card could not be posted, so the member can try again."""
+    with conn:
+        conn.execute("DELETE FROM loa WHERE id = ? AND guild_id = ? AND status = 'pending'", (loa_id, guild_id))
 
 
 def get_loa(conn, guild_id, loa_id):

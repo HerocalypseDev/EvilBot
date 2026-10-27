@@ -19,8 +19,8 @@ import board
 import boss
 import db
 import reminders
-from config import (BACKUP_HOUR_UTC, DATA_PAGE, IGN_MAX, IGN_MIN, MEMBER_ROLE_NAME,
-                    RECENT_DONORS, REMINDER_MINUTES, VERSION, XP_CAP)
+from config import (BACKUP_HOUR_UTC, DATA_PAGE, IGN_MAX, IGN_MIN, LOA_COOLDOWN_DAYS, LOA_MAX_DAYS,
+                    MEMBER_ROLE_NAME, RECENT_DONORS, REMINDER_MINUTES, VERSION, XP_CAP)
 
 log = logging.getLogger("evil")
 STARTED = datetime.now(timezone.utc)
@@ -514,6 +514,8 @@ class Bot(commands.Bot):
         self.add_view(LinkRequestView())
         self.add_view(XpPanelView())
         self.add_view(XpRequestView())
+        self.add_view(LoaPanelView())
+        self.add_view(LoaRequestView())
         for key in [*DATA_SECTIONS, *ATTEND_SECTIONS]:
             self.add_view(DataView(key))
         await self.tree.sync()
@@ -1797,6 +1799,224 @@ async def boss_missed(interaction: discord.Interaction, count: app_commands.Rang
         header += f" Only {checked} bosses so far."
     await send_text(interaction, header, [discord.utils.escape_markdown(n) for n in names] or ["Nobody."],
                     "boss_missed.txt")
+
+
+# --- LOA: members apply on the board, staff approve ---
+
+_loa_lock = asyncio.Lock()
+
+
+def loa_panel_embed(guild, active):
+    embed = discord.Embed(
+        title="Leave of absence",
+        description="Need a break? Press **Apply for LOA**. Staff approve each request.\n"
+                    f"• Up to {LOA_MAX_DAYS} days. After an LOA ends, wait {LOA_COOLDOWN_DAYS} days before the next.\n"
+                    "• While on LOA you get no pings or reminders, and your days do not count against you in "
+                    "donations, boss attendance or XP. Your streaks keep going.\n"
+                    "• When it ends, you get a ping to come back and grind.")
+    embed.add_field(name=f"On LOA now ({len(active)})", inline=False, value=board.join_capped(
+        [f"{discord.utils.escape_markdown(ign)} · until the end of {last}" for ign, last in active], sep="\n")
+        or "Nobody.")
+    return brand(embed, guild, "Days use the UTC day")
+
+
+def loa_block_text(error):
+    if isinstance(error, db.LoaCooldown):
+        return f"You can apply again from {error.args[0]} (UTC): there is a {LOA_COOLDOWN_DAYS}-day wait after an LOA."
+    kind, last = error.args
+    return "Your last request is still waiting for staff." if kind == "pending" else \
+        f"You already have an LOA until the end of {last} (UTC)."
+
+
+async def refresh_loa_panel(guild):
+    """Update the LOA board. If something was posted below it, move it to the bottom of the channel."""
+    async with _loa_lock:
+        row = db.get_guild(bot.db, guild.id)
+        channel = row and row["loa_channel_id"] and guild.get_channel(row["loa_channel_id"])
+        if not channel:
+            return
+        embed = loa_panel_embed(guild, board.loa_on(bot.db, guild.id, db.today_utc()))
+        old = row["loa_message_id"] and channel.get_partial_message(row["loa_message_id"])
+        try:
+            if old and channel.last_message_id == old.id:
+                return await old.edit(embed=embed, view=LoaPanelView())
+            if old:
+                try:
+                    await old.delete()
+                except discord.NotFound:
+                    pass
+            new = await channel.send(embed=embed, view=LoaPanelView())
+            db.save_guild(bot.db, guild.id, loa_message_id=new.id)
+        except discord.HTTPException as e:
+            log.warning("LOA panel refresh failed in guild %s: %s", guild.id, e)
+
+
+class LoaPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Apply for LOA", style=discord.ButtonStyle.primary, custom_id="loa_apply")
+    async def apply(self, interaction, button):
+        row = db.get_guild(bot.db, interaction.guild_id)
+        if not row or not row["loa_review_channel_id"]:
+            return await interaction.response.send_message("LOA is not set up yet.", ephemeral=True)
+        user = interaction.user
+        if not (user.get_role(row["member_role_id"]) or (row["loa_role_id"] and user.get_role(row["loa_role_id"]))):
+            return await interaction.response.send_message("Only guild members can apply for LOA.", ephemeral=True)
+        if not db.get_ign(bot.db, interaction.guild_id, user.id):
+            return await interaction.response.send_message(
+                "Ask an officer to link your in-game name first.", ephemeral=True)
+        try:
+            db.loa_check(bot.db, interaction.guild_id, user.id, db.today_utc())
+        except (db.LoaBusy, db.LoaCooldown) as e:
+            return await interaction.response.send_message(loa_block_text(e), ephemeral=True)
+        await interaction.response.send_modal(LoaModal())
+
+
+class LoaModal(discord.ui.Modal, title="Leave of absence"):
+    days = discord.ui.TextInput(label=f"Days away (1 to {LOA_MAX_DAYS})", max_length=2)
+    start = discord.ui.TextInput(label="Start date (optional)", placeholder="YYYY-MM-DD. Empty = today",
+                                 required=False, max_length=10)
+    reason = discord.ui.TextInput(label="Reason", style=discord.TextStyle.paragraph, max_length=500)
+
+    async def on_submit(self, interaction):
+        row = db.get_guild(bot.db, interaction.guild_id)
+        channel = row and row["loa_review_channel_id"] and interaction.guild.get_channel(row["loa_review_channel_id"])
+        if not channel:
+            return await interaction.response.send_message(
+                "Could not reach the officers. Try again later.", ephemeral=True)
+        reason, today = self.reason.value.strip(), db.today_utc()
+        if not reason:
+            return await interaction.response.send_message("Give a reason.", ephemeral=True)
+        try:
+            days, start = db.parse_loa(self.days.value, self.start.value, today)
+            loa_id = db.loa_request(bot.db, interaction.guild_id, interaction.user.id, reason, days, start, today)
+        except db.LoaInvalid as e:
+            return await interaction.response.send_message(e.args[0], ephemeral=True)
+        except (db.LoaBusy, db.LoaCooldown) as e:
+            return await interaction.response.send_message(loa_block_text(e), ephemeral=True)
+        embed = discord.Embed(title="LOA request", description="Approve to start the leave. It counts whole UTC days.")
+        embed.add_field(name="Member", value=interaction.user.mention)
+        embed.add_field(name="In-game name", value=discord.utils.escape_markdown(
+            db.get_ign(bot.db, interaction.guild_id, interaction.user.id) or "not linked"))
+        embed.add_field(name="Days", value=str(days))
+        embed.add_field(name="Asked start (UTC)", value=start)
+        embed.add_field(name="Reason", value=reason, inline=False)
+        embed.add_field(name="Request", value=str(loa_id))
+        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
+        try:
+            await channel.send(embed=brand(embed, footer="Requested"), view=LoaRequestView())
+        except discord.HTTPException as e:
+            db.delete_loa_request(bot.db, interaction.guild_id, loa_id)
+            log.warning("LOA request post failed in guild %s: %s", interaction.guild_id, e)
+            return await interaction.response.send_message(
+                "Could not reach the officers. Try again later.", ephemeral=True)
+        await interaction.response.send_message("Request sent. You get a DM when staff answer.", ephemeral=True)
+
+
+class LoaRequestView(discord.ui.View):
+    """Approve / Deny under an LOA request in the officer channel. The request id is read back from the
+    embed, so the buttons keep working after a restart."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @staticmethod
+    def request(interaction):
+        fields = {f.name: f.value for f in interaction.message.embeds[0].fields}
+        return db.get_loa(bot.db, interaction.guild_id, int(fields["Request"]))
+
+    @discord.ui.button(label="Approve", style=discord.ButtonStyle.green, custom_id="loareq_approve")
+    async def approve(self, interaction, button):
+        if not await require_staff(interaction):
+            return
+        req = self.request(interaction)
+        loa = req and db.approve_loa(bot.db, interaction.guild_id, req["id"], interaction.user.id, db.today_utc())
+        if not loa:
+            return await interaction.response.send_message("This request was already answered.", ephemeral=True)
+        span = f"{loa['start_day']} to {loa['end_day']} (UTC days)"
+        await LinkRequestView.close(self, interaction, loa["discord_id"], f"Approved by {interaction.user.mention}: {span}",
+                                    f"Your LOA in {interaction.guild.name} was approved: {span}. "
+                                    "You get a ping when it ends.")
+        await audit(interaction, f"approved the LOA of <@{loa['discord_id']}>: {span}.")
+        await refresh_loa_panel(interaction.guild)
+        await refresh_board(interaction.guild)
+
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.secondary, custom_id="loareq_deny")
+    async def deny(self, interaction, button):
+        if not await require_staff(interaction):
+            return
+        req = self.request(interaction)
+        if not req or req["status"] != "pending":
+            return await interaction.response.send_message("This request was already answered.", ephemeral=True)
+        await interaction.response.send_modal(LoaDenyModal(req["id"]))
+
+
+class LoaDenyModal(discord.ui.Modal, title="Deny LOA request"):
+    reason = discord.ui.TextInput(label="Reason (the member gets it in a DM)", style=discord.TextStyle.paragraph,
+                                  max_length=500)
+
+    def __init__(self, loa_id):
+        super().__init__()
+        self.loa_id = loa_id
+
+    async def on_submit(self, interaction):
+        if not await require_staff(interaction):
+            return
+        reason = self.reason.value.strip()
+        if not reason:
+            return await interaction.response.send_message("Give a reason.", ephemeral=True)
+        req = db.get_loa(bot.db, interaction.guild_id, self.loa_id)
+        if not req or not db.deny_loa(bot.db, interaction.guild_id, self.loa_id, interaction.user.id, reason):
+            return await interaction.response.send_message("This request was already answered.", ephemeral=True)
+        await LinkRequestView.close(self, interaction, req["discord_id"],
+                                    f"Denied by {interaction.user.mention}\nReason: {reason}",
+                                    f"Your LOA request in {interaction.guild.name} was denied.\nReason: {reason}")
+        await audit(interaction, f"denied the LOA request of <@{req['discord_id']}>.")
+
+
+@bot.tree.command(name="loa_setup", description="Staff: post the LOA board and set the channel for LOA requests.")
+@app_commands.guild_only()
+@app_commands.describe(loa_channel="Where members see the board and press Apply",
+                       review_channel="Private officer channel for LOA requests")
+async def loa_setup(interaction: discord.Interaction, loa_channel: discord.TextChannel,
+                    review_channel: discord.TextChannel):
+    if not await require_staff(interaction):
+        return
+    row = db.get_guild(bot.db, interaction.guild_id)
+    if not row:
+        return await interaction.response.send_message("Run /setup first.", ephemeral=True)
+    for channel in (loa_channel, review_channel):
+        perms = channel.permissions_for(interaction.guild.me)
+        if not (perms.view_channel and perms.send_messages and perms.embed_links):
+            return await interaction.response.send_message(
+                f"I cannot post in {channel.mention}. Give the bot View Channel, Send Messages and Embed Links "
+                "there, then run /loa_setup again.", ephemeral=True)
+    role = row["loa_role_id"] and interaction.guild.get_role(row["loa_role_id"])
+    if not role and not interaction.guild.me.guild_permissions.manage_roles:
+        return await interaction.response.send_message(
+            "I need the Manage Roles permission to create the On LOA role, then run /loa_setup again.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    if not role:
+        try:
+            role = await interaction.guild.create_role(name="On LOA", reason="LOA setup")
+        except discord.HTTPException as e:
+            return await interaction.followup.send(f"Could not create the On LOA role: {e}", ephemeral=True)
+    old = row["loa_channel_id"] and row["loa_message_id"] and interaction.guild.get_channel(row["loa_channel_id"])
+    if old and old.id != loa_channel.id:  # moved: the old board would keep a working button
+        try:
+            await old.get_partial_message(row["loa_message_id"]).delete()
+        except discord.HTTPException:
+            pass
+        db.save_guild(bot.db, interaction.guild_id, loa_message_id=None)
+    db.save_guild(bot.db, interaction.guild_id, loa_channel_id=loa_channel.id, loa_review_channel_id=review_channel.id,
+                  loa_role_id=role.id)
+    await interaction.followup.send(
+        f"LOA board in {loa_channel.mention}, requests go to {review_channel.mention}. Keep that one private to "
+        f"officers. Give {role.mention} the same channel access as the member role: members swap to it while on LOA.",
+        ephemeral=True)
+    await audit(interaction, f"set the LOA channel to {loa_channel.mention} and LOA requests to {review_channel.mention}.")
+    await refresh_loa_panel(interaction.guild)
 
 
 # --- XP: officers log each member's weekly total; members press I hit cap for an officer to approve ---

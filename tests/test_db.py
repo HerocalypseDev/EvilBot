@@ -275,3 +275,17 @@ def test_loa_guild_fields(conn):
     db.save_guild(conn, G, loa_channel_id=1, loa_review_channel_id=2, loa_role_id=3, loa_message_id=4)
     row = db.get_guild(conn, G)
     assert (row["loa_channel_id"], row["loa_review_channel_id"], row["loa_role_id"], row["loa_message_id"]) == (1, 2, 3, 4)
+
+
+def test_loa_check_and_delete_request(conn):
+    today = "2026-10-27"
+    db.loa_check(conn, G, A, today)  # nothing yet: fine
+    loa = db.loa_request(conn, G, A, "trip", 2, today, today)
+    with pytest.raises(db.LoaBusy):
+        db.loa_check(conn, G, A, today)
+    db.delete_loa_request(conn, G, loa)
+    db.loa_check(conn, G, A, today)  # the card never posted: the member may try again
+    approved = db.loa_request(conn, G, A, "trip", 2, today, today)
+    db.approve_loa(conn, G, approved, 9, today)
+    db.delete_loa_request(conn, G, approved)  # only pending rows can be deleted
+    assert db.get_loa(conn, G, approved)["status"] == "approved"
