@@ -4,7 +4,7 @@ import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-from config import DONATION_AMOUNT, IGN_MAX, IGN_MIN, XP_CAP
+from config import DONATION_AMOUNT, IGN_MAX, IGN_MIN, LOA_COOLDOWN_DAYS, LOA_MAX_AHEAD_DAYS, LOA_MAX_DAYS, XP_CAP
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS guilds (
@@ -106,6 +106,22 @@ CREATE TABLE IF NOT EXISTS xp_requests (
     reviewed_at TEXT,
     UNIQUE (guild_id, discord_id, day_utc)
 );
+CREATE TABLE IF NOT EXISTS loa (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id    INTEGER NOT NULL,
+    discord_id  INTEGER NOT NULL,
+    reason      TEXT NOT NULL,
+    days        INTEGER NOT NULL,
+    start_day   TEXT NOT NULL,
+    end_day     TEXT NOT NULL,
+    status      TEXT NOT NULL CHECK (status IN ('pending','approved','ended','denied','cancelled')),
+    deny_reason TEXT,
+    reviewed_by INTEGER,
+    created_at  TEXT NOT NULL,
+    reviewed_at TEXT,
+    started_at  TEXT,
+    notified_at TEXT
+);
 """
 
 
@@ -137,6 +153,18 @@ class XpInvalid(Exception):
     """A log that would give some day of the week a gain below 0 or above the cap. args: (day, gain, cap)."""
 
 
+class LoaInvalid(Exception):
+    """A bad LOA form. args: (message for the member,)."""
+
+
+class LoaBusy(Exception):
+    """The member has a pending or running LOA. args: ('pending' or 'active', last day or None)."""
+
+
+class LoaCooldown(Exception):
+    """The member must wait. args: (first day they may apply again,)."""
+
+
 def now_iso():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -164,7 +192,9 @@ def connect(path):
                          ("attend_data_message_ids", "TEXT"),
                          ("staff_channel_id", "INTEGER"),
                          ("welcome_channel_id", "INTEGER"), ("xp_channel_id", "INTEGER"),
-                         ("xp_message_id", "INTEGER"), ("xp_review_channel_id", "INTEGER")):  # columns added after the first release
+                         ("xp_message_id", "INTEGER"), ("xp_review_channel_id", "INTEGER"),
+                         ("loa_channel_id", "INTEGER"), ("loa_review_channel_id", "INTEGER"),
+                         ("loa_role_id", "INTEGER"), ("loa_message_id", "INTEGER")):  # columns added after the first release
         if column not in have:
             conn.execute(f"ALTER TABLE guilds ADD COLUMN {column} {kind}")
     return conn
@@ -176,7 +206,8 @@ GUILD_FIELDS = {"panel_channel_id", "status_message_id", "officer_role_id",
                 "member_role_id", "board_day", "boss_channel_id",
                 "data_channel_id", "data_message_ids", "attend_channel_id",
                 "attend_message_id", "attend_data_channel_id", "attend_data_message_ids", "staff_channel_id",
-                "welcome_channel_id", "xp_channel_id", "xp_message_id", "xp_review_channel_id"}
+                "welcome_channel_id", "xp_channel_id", "xp_message_id", "xp_review_channel_id",
+                "loa_channel_id", "loa_review_channel_id", "loa_role_id", "loa_message_id"}
 
 
 def save_guild(conn, guild_id, **fields):
@@ -615,3 +646,106 @@ def xp_cap_days(conn, guild_id, discord_id):
                                                     (guild_id, discord_id))}
     return {d["day"] for w in weeks for d in xp_week(conn, guild_id, discord_id, w)
             if d["gain"] is not None and d["gain"] >= XP_CAP}
+
+
+# --- LOA (leave of absence): whole UTC days, start_day and end_day both count ---
+
+def add_days(day, n):
+    return (datetime.strptime(day, "%Y-%m-%d").date() + timedelta(days=n)).isoformat()
+
+
+def parse_loa(days_text, start_text, today):
+    """Check the LOA form. Returns (days, start_day). Raises LoaInvalid with a message for the member."""
+    try:
+        days = int(days_text.strip())
+    except ValueError:
+        raise LoaInvalid("Days must be a whole number.") from None
+    if not 1 <= days <= LOA_MAX_DAYS:
+        raise LoaInvalid(f"Days must be from 1 to {LOA_MAX_DAYS}.")
+    if not start_text.strip():
+        return days, today
+    try:
+        start = datetime.strptime(start_text.strip(), "%Y-%m-%d").date().isoformat()
+    except ValueError:
+        raise LoaInvalid("Start date must look like 2026-10-28, or stay empty for today.") from None
+    if not today <= start <= add_days(today, LOA_MAX_AHEAD_DAYS):
+        raise LoaInvalid(f"Start date must be today or at most {LOA_MAX_AHEAD_DAYS} days ahead.")
+    return days, start
+
+
+def loa_request(conn, guild_id, discord_id, reason, days, start_day, today):
+    """Open a pending LOA. Raises LoaBusy if one is pending or still running, LoaCooldown if the last one ended
+    less than LOA_COOLDOWN_DAYS ago."""
+    busy = conn.execute("SELECT status, end_day FROM loa WHERE guild_id = ? AND discord_id = ? AND "
+                        "(status = 'pending' OR (status = 'approved' AND end_day >= ?))",
+                        (guild_id, discord_id, today)).fetchone()
+    if busy:
+        raise LoaBusy(*(("pending", None) if busy["status"] == "pending" else ("active", busy["end_day"])))
+    last = conn.execute("SELECT MAX(end_day) FROM loa WHERE guild_id = ? AND discord_id = ? "
+                        "AND status IN ('approved','ended')", (guild_id, discord_id)).fetchone()[0]
+    if last and today < add_days(last, 1 + LOA_COOLDOWN_DAYS):
+        raise LoaCooldown(add_days(last, 1 + LOA_COOLDOWN_DAYS))
+    with conn:
+        return conn.execute("INSERT INTO loa (guild_id, discord_id, reason, days, start_day, end_day, status, created_at) "
+                            "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
+                            (guild_id, discord_id, reason, days, start_day, add_days(start_day, days - 1),
+                             now_iso())).lastrowid
+
+
+def get_loa(conn, guild_id, loa_id):
+    return conn.execute("SELECT * FROM loa WHERE id = ? AND guild_id = ?", (loa_id, guild_id)).fetchone()
+
+
+def approve_loa(conn, guild_id, loa_id, staff_id, today):
+    """pending -> approved. The leave starts on its start day, or today if that day has passed.
+    Returns the row, or None if it was already closed."""
+    row = get_loa(conn, guild_id, loa_id)
+    if not row or row["status"] != "pending":
+        return None
+    start = max(row["start_day"], today)
+    with conn:
+        conn.execute("UPDATE loa SET status = 'approved', start_day = ?, end_day = ?, reviewed_by = ?, reviewed_at = ? "
+                     "WHERE id = ? AND guild_id = ?",
+                     (start, add_days(start, row["days"] - 1), staff_id, now_iso(), loa_id, guild_id))
+    return get_loa(conn, guild_id, loa_id)
+
+
+def deny_loa(conn, guild_id, loa_id, staff_id, reason):
+    """pending -> denied. False if already closed."""
+    with conn:
+        return conn.execute("UPDATE loa SET status = 'denied', deny_reason = ?, reviewed_by = ?, reviewed_at = ? "
+                            "WHERE id = ? AND guild_id = ? AND status = 'pending'",
+                            (reason, staff_id, now_iso(), loa_id, guild_id)).rowcount == 1
+
+
+def loa_active_on(conn, guild_id, day):
+    """{discord_id: last LOA day} for every member on approved leave on `day`."""
+    return {r[0]: r[1] for r in conn.execute(
+        "SELECT discord_id, end_day FROM loa WHERE guild_id = ? AND status IN ('approved','ended') "
+        "AND start_day <= ? AND end_day >= ?", (guild_id, day, day))}
+
+
+def loa_due_start(conn, guild_id, today):
+    """Approved leaves that run today and have not had their role swap yet."""
+    return conn.execute("SELECT * FROM loa WHERE guild_id = ? AND status = 'approved' AND started_at IS NULL "
+                        "AND start_day <= ? AND end_day >= ? ORDER BY id", (guild_id, today, today)).fetchall()
+
+
+def claim_loa_start(conn, loa_id):
+    """True only the first time, so a restart never swaps the role twice."""
+    with conn:
+        return conn.execute("UPDATE loa SET started_at = ? WHERE id = ? AND started_at IS NULL",
+                            (now_iso(), loa_id)).rowcount == 1
+
+
+def loa_due_end(conn, guild_id, today):
+    """Approved leaves whose last day is before `today` and whose end ping is not sent yet."""
+    return conn.execute("SELECT * FROM loa WHERE guild_id = ? AND status = 'approved' AND end_day < ? "
+                        "AND notified_at IS NULL ORDER BY id", (guild_id, today)).fetchall()
+
+
+def claim_loa_end(conn, loa_id):
+    """approved -> ended. True only the first time, so a restart never double-pings."""
+    with conn:
+        return conn.execute("UPDATE loa SET status = 'ended', notified_at = ? WHERE id = ? "
+                            "AND status = 'approved' AND notified_at IS NULL", (now_iso(), loa_id)).rowcount == 1

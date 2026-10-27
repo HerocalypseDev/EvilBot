@@ -195,3 +195,83 @@ def test_xp_cap_days_across_weeks(conn):
     db.xp_set(conn, G, A, "2026-10-26", 9, gain=1500)  # Monday, new week
     db.xp_set(conn, G, A, "2026-10-27", 9, total=2000)
     assert db.xp_cap_days(conn, G, A) == {"2026-10-24", "2026-10-25", "2026-10-26"}
+
+
+def test_parse_loa():
+    today = "2026-10-27"
+    assert db.parse_loa(" 5 ", "", today) == (5, today)
+    assert db.parse_loa("14", "2026-11-03", today) == (14, "2026-11-03")  # 7 days ahead is the limit
+    assert db.parse_loa("1", "2026-10-27", today) == (1, today)
+    for days, start in (("0", ""), ("15", ""), ("x", ""), ("2.5", ""), ("3", "2026-10-26"),
+                        ("3", "2026-11-04"), ("3", "next week"), ("3", "27-10-2026")):
+        with pytest.raises(db.LoaInvalid):
+            db.parse_loa(days, start, today)
+
+
+def test_loa_request_rules(conn):
+    today = "2026-10-27"
+    first = db.loa_request(conn, G, A, "trip", 3, today, today)
+    with pytest.raises(db.LoaBusy) as e:
+        db.loa_request(conn, G, A, "again", 1, today, today)  # still pending
+    assert e.value.args == ("pending", None)
+    db.loa_request(conn, G, B, "other member", 1, today, today)  # other member is fine
+    row = db.approve_loa(conn, G, first, 9, today)
+    assert (row["start_day"], row["end_day"]) == ("2026-10-27", "2026-10-29")
+    with pytest.raises(db.LoaBusy) as e:
+        db.loa_request(conn, G, A, "again", 1, "2026-10-29", "2026-10-29")  # last day still counts
+    assert e.value.args == ("active", "2026-10-29")
+    # leave ended 10-29: 10-30 + 7 days wait -> first free day is 11-06
+    with pytest.raises(db.LoaCooldown) as e:
+        db.loa_request(conn, G, A, "again", 1, "2026-11-05", "2026-11-05")
+    assert e.value.args == ("2026-11-06",)
+    db.loa_request(conn, G, A, "again", 1, "2026-11-06", "2026-11-06")
+
+
+def test_loa_denied_has_no_cooldown_and_approve_once(conn):
+    today = "2026-10-27"
+    first = db.loa_request(conn, G, A, "trip", 3, today, today)
+    assert db.deny_loa(conn, G, first, 9, "need you this week")
+    assert not db.deny_loa(conn, G, first, 9, "x")
+    assert db.approve_loa(conn, G, first, 9, today) is None  # already closed
+    second = db.loa_request(conn, G, A, "trip", 3, today, today)
+    assert db.get_loa(conn, G, second)["status"] == "pending"
+    assert db.get_loa(conn, 2, second) is None  # other guild
+
+
+def test_loa_start_moves_to_approval_day_when_late(conn):
+    loa = db.loa_request(conn, G, A, "trip", 2, "2026-10-25", "2026-10-25")
+    row = db.approve_loa(conn, G, loa, 9, "2026-10-27")  # staff was slow
+    assert (row["start_day"], row["end_day"]) == ("2026-10-27", "2026-10-28")
+    future = db.loa_request(conn, G, B, "trip", 2, "2026-10-30", "2026-10-27")
+    assert db.approve_loa(conn, G, future, 9, "2026-10-27")["start_day"] == "2026-10-30"
+
+
+def test_loa_active_on(conn):
+    loa = db.loa_request(conn, G, A, "trip", 3, "2026-10-27", "2026-10-27")
+    assert db.loa_active_on(conn, G, "2026-10-27") == {}  # pending does not count
+    db.approve_loa(conn, G, loa, 9, "2026-10-27")
+    assert db.loa_active_on(conn, G, "2026-10-26") == {}
+    assert db.loa_active_on(conn, G, "2026-10-27") == {A: "2026-10-29"}
+    assert db.loa_active_on(conn, G, "2026-10-29") == {A: "2026-10-29"}
+    assert db.loa_active_on(conn, G, "2026-10-30") == {}
+    assert db.loa_active_on(conn, 2, "2026-10-28") == {}
+
+
+def test_loa_start_and_end_are_claimed_once(conn):
+    loa = db.loa_request(conn, G, A, "trip", 2, "2026-10-27", "2026-10-27")
+    db.approve_loa(conn, G, loa, 9, "2026-10-27")
+    assert [r["id"] for r in db.loa_due_start(conn, G, "2026-10-27")] == [loa]
+    assert db.loa_due_start(conn, G, "2026-10-26") == []  # not started yet
+    assert db.claim_loa_start(conn, loa) and not db.claim_loa_start(conn, loa)
+    assert db.loa_due_start(conn, G, "2026-10-27") == []
+    assert db.loa_due_end(conn, G, "2026-10-28") == []  # last day is still LOA
+    assert [r["id"] for r in db.loa_due_end(conn, G, "2026-10-29")] == [loa]
+    assert db.claim_loa_end(conn, loa) and not db.claim_loa_end(conn, loa)
+    assert db.loa_due_end(conn, G, "2026-10-29") == []
+    assert db.loa_active_on(conn, G, "2026-10-28") == {A: "2026-10-28"}  # past days stay marked LOA
+
+
+def test_loa_guild_fields(conn):
+    db.save_guild(conn, G, loa_channel_id=1, loa_review_channel_id=2, loa_role_id=3, loa_message_id=4)
+    row = db.get_guild(conn, G)
+    assert (row["loa_channel_id"], row["loa_review_channel_id"], row["loa_role_id"], row["loa_message_id"]) == (1, 2, 3, 4)
