@@ -648,7 +648,7 @@ def xp_cap_days(conn, guild_id, discord_id):
             if d["gain"] is not None and d["gain"] >= XP_CAP}
 
 
-# --- LOA (leave of absence): whole UTC days, start_day and end_day both count ---
+# --- LOA (leave of absence): whole UTC days. start_day and end_day are both LOA days; end_day = start_day + days ---
 
 def add_days(day, n):
     return (datetime.strptime(day, "%Y-%m-%d").date() + timedelta(days=n)).isoformat()
@@ -693,7 +693,7 @@ def loa_request(conn, guild_id, discord_id, reason, days, start_day, today):
     with conn:
         return conn.execute("INSERT INTO loa (guild_id, discord_id, reason, days, start_day, end_day, status, created_at) "
                             "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
-                            (guild_id, discord_id, reason, days, start_day, add_days(start_day, days - 1),
+                            (guild_id, discord_id, reason, days, start_day, add_days(start_day, days),
                              now_iso())).lastrowid
 
 
@@ -717,7 +717,7 @@ def approve_loa(conn, guild_id, loa_id, staff_id, today):
     with conn:
         conn.execute("UPDATE loa SET status = 'approved', start_day = ?, end_day = ?, reviewed_by = ?, reviewed_at = ? "
                      "WHERE id = ? AND guild_id = ?",
-                     (start, add_days(start, row["days"] - 1), staff_id, now_iso(), loa_id, guild_id))
+                     (start, add_days(start, row["days"]), staff_id, now_iso(), loa_id, guild_id))
     return get_loa(conn, guild_id, loa_id)
 
 
@@ -810,7 +810,7 @@ def extend_loa(conn, guild_id, loa_id, extra, today):
     row = get_loa(conn, guild_id, loa_id)
     if not row or row["status"] != "approved" or row["end_day"] < today:
         return None
-    have = (datetime.strptime(row["end_day"], "%Y-%m-%d") - datetime.strptime(row["start_day"], "%Y-%m-%d")).days + 1
+    have = (datetime.strptime(row["end_day"], "%Y-%m-%d") - datetime.strptime(row["start_day"], "%Y-%m-%d")).days
     if extra < 1 or have + extra > LOA_MAX_DAYS:
         raise LoaInvalid(f"An LOA lasts at most {LOA_MAX_DAYS} days in all. This one has {have}, "
                          f"so you can add at most {LOA_MAX_DAYS - have}.")
@@ -829,7 +829,7 @@ def grant_loa(conn, guild_id, discord_id, reason, days, today, staff_id):
     with conn:
         return conn.execute("INSERT INTO loa (guild_id, discord_id, reason, days, start_day, end_day, status, "
                             "reviewed_by, created_at, reviewed_at) VALUES (?, ?, ?, ?, ?, ?, 'approved', ?, ?, ?)",
-                            (guild_id, discord_id, reason, days, today, add_days(today, days - 1), staff_id,
+                            (guild_id, discord_id, reason, days, today, add_days(today, days), staff_id,
                              now_iso(), now_iso())).lastrowid
 
 

@@ -307,15 +307,15 @@ def test_streak_skips_loa_days():
 
 def test_loa_member_is_not_waiting_and_shows_as_loa():
     conn = conn_with((1, "Alpha"), (2, "Beta"))
-    on_leave(conn, 1, "2026-10-21", 3)  # 21st to 23rd
+    on_leave(conn, 1, "2026-10-21", 3)  # 21st to 24th
     tracked = [(1, "A"), (2, "B")]
     assert not_donated(conn, G, tracked, DAY) == [(2, "Beta")]
-    assert [r[0] for r in not_donated(conn, G, tracked, "2026-10-24")] == [1, 2]  # leave is over
-    assert data_sections(conn, G, tracked, DAY)["on_loa"] == [("Alpha", "2026-10-23")]
+    assert [r[0] for r in not_donated(conn, G, tracked, "2026-10-25")] == [1, 2]  # leave is over
+    assert data_sections(conn, G, tracked, DAY)["on_loa"] == [("Alpha", "2026-10-24")]
     assert data_sections(conn, G, tracked, DAY)["not_donated"] == [("B", "Beta")]
     donated, waiting, on_loa = day_lists(conn, G, tracked, YDAY)
-    assert (waiting, on_loa) == (["Beta"], [("Alpha", "2026-10-23")])
-    assert day_lists(conn, G, [(2, "B")], DAY)[2] == [("Alpha", "2026-10-23")]  # lost the role: still listed
+    assert (waiting, on_loa) == (["Beta"], [("Alpha", "2026-10-24")])
+    assert day_lists(conn, G, [(2, "B")], DAY)[2] == [("Alpha", "2026-10-24")]  # lost the role: still listed
     to_log, _ = log_all_plan(conn, G, tracked, DAY, 0)
     assert [i for i, *_ in to_log] == [2]  # /log_all skips the member on LOA
 
@@ -324,7 +324,7 @@ def test_member_card_with_loa():
     conn = conn_with((1, "Alpha"))
     for day in ("2026-10-18", "2026-10-19", "2026-10-22"):
         db.record(conn, G, 1, "A", "Alpha", day)
-    on_leave(conn, 1, "2026-10-20", 2)  # 20th and 21st
+    on_leave(conn, 1, "2026-10-20", 1)  # 20th and 21st
     card = member_card(conn, G, [], 1, datetime(2026, 10, 22, 9, tzinfo=timezone.utc))
     assert card["loa"] is None and card["streak"] == 3 and card["best"] == 3
     assert card["month_loa"] == 2 and card["month_elapsed"] == 20  # 22 days minus 2 LOA
@@ -353,7 +353,7 @@ def test_boss_streak_and_missed_skip_loa_days():
 
 def test_dashboard_stats_and_attendance_lists_with_loa():
     conn = conn_with((1, "Aa"), (2, "Bb"))
-    on_leave(conn, 2, "2026-10-21", 2)  # 21st and 22nd
+    on_leave(conn, 2, "2026-10-21", 1)  # 21st and 22nd
     now = datetime(2026, 10, 22, 12, tzinfo=timezone.utc)  # a Thursday: week since Mon 19th = 4 days
     stats = dashboard_stats(conn, G, [(1, "a")], now)  # Bb lost the member role for the leave
     assert stats["on_loa"] == [("Bb", "2026-10-22")]
@@ -378,5 +378,5 @@ def test_xp_and_monthly_with_loa():
     assert [r[2] for r in xp_day(conn, G, tracked, YDAY)] == ["Aa", "Bb"]
     assert xp_week_totals(conn, G, tracked, DAY) == {1: 0}
     report = monthly_report(conn, G, tracked, "2026-10", datetime(2026, 11, 1, tzinfo=timezone.utc))
-    assert report["loa_days"] == {"Aa": 0, "Bb": 1}
-    assert monthly_csv(report).splitlines()[2].endswith(",1")
+    assert report["loa_days"] == {"Aa": 0, "Bb": 2}  # the 22nd and the 23rd
+    assert monthly_csv(report).splitlines()[2].endswith(",2")
