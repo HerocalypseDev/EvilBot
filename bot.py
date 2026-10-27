@@ -822,6 +822,8 @@ async def tick():
             row = db.get_guild(bot.db, guild.id)
             if not row:
                 continue
+            if row["loa_role_id"]:  # first: the role swap must come before any role ping
+                await loa_tick(guild, row, today)
             if row["boss_channel_id"]:
                 await boss_tick(guild, row, now)
             if row["attend_channel_id"]:
@@ -2017,6 +2019,53 @@ async def loa_setup(interaction: discord.Interaction, loa_channel: discord.TextC
         ephemeral=True)
     await audit(interaction, f"set the LOA channel to {loa_channel.mention} and LOA requests to {review_channel.mention}.")
     await refresh_loa_panel(interaction.guild)
+
+
+async def swap_loa_role(guild, row, member_id, on):
+    """On LOA: take the member role and give the On LOA role, so role pings skip the member. Off: the reverse.
+    Returns an error text, or None when done."""
+    member, loa_role = guild.get_member(member_id), guild.get_role(row["loa_role_id"])
+    member_role = guild.get_role(row["member_role_id"])
+    if not (member and loa_role and member_role):
+        return "the member, the member role or the On LOA role was not found"
+    add, remove = (loa_role, member_role) if on else (member_role, loa_role)
+    try:  # add first: a failure half way must not leave the member with no access
+        await member.add_roles(add, reason="LOA")
+        await member.remove_roles(remove, reason="LOA")
+    except discord.HTTPException as e:
+        return str(e)
+
+
+async def loa_tick(guild, row, today):
+    """Swap roles on the first LOA day. On the day after the last, swap back and ping the member in the LOA
+    channel and in a DM. Each step is claimed in the database first, so a restart never repeats it."""
+    changed = False
+    for loa in db.loa_due_start(bot.db, guild.id, today):
+        if db.claim_loa_start(bot.db, loa["id"]):
+            changed = True
+            if error := await swap_loa_role(guild, row, loa["discord_id"], on=True):
+                await staff_post(guild, f"Could not move <@{loa['discord_id']}> to the On LOA role: {error}. The LOA "
+                                        "is recorded, but they may still get role pings.")
+    for loa in db.loa_due_end(bot.db, guild.id, today):
+        if not db.claim_loa_end(bot.db, loa["id"]):
+            continue
+        changed = True
+        if error := await swap_loa_role(guild, row, loa["discord_id"], on=False):
+            await staff_post(guild, f"Could not give <@{loa['discord_id']}> the member role back: {error}. "
+                                    "Please do it by hand.")
+        text = f"<@{loa['discord_id']}> your LOA is over. Time to go back to grinding!"
+        channel = row["loa_channel_id"] and guild.get_channel(row["loa_channel_id"])
+        member = guild.get_member(loa["discord_id"])
+        for target, message in ((channel, text), (member, f"{text} ({guild.name})")):
+            try:
+                if target:
+                    await target.send(message)
+            except discord.HTTPException as e:  # closed DMs, or no access to the channel
+                log.warning("LOA end notice failed for %s in guild %s: %s", loa["discord_id"], guild.id, e)
+        log.info("LOA %s ended in guild %s", loa["id"], guild.id)
+    if changed:
+        for refresh in (refresh_loa_panel, refresh_board, refresh_attendance, refresh_xp_panel):
+            await refresh(guild)
 
 
 # --- XP: officers log each member's weekly total; members press I hit cap for an officer to approve ---
