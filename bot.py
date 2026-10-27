@@ -49,6 +49,12 @@ def tracked_members(guild, member_role_id):
     return [(m.id, m.display_name) for m in role.members if not m.bot] if role else []
 
 
+def loa_block(guild_id, member_id, day, who="You are"):
+    """Refusal text if the member is on LOA on `day` (ISO date), else None. Nothing is logged for an LOA day."""
+    last = db.loa_active_on(bot.db, guild_id, day).get(member_id)
+    return f"{who} on LOA until the end of {last} (UTC). Nothing is logged on LOA days." if last else None
+
+
 BRAND = discord.Colour(0xC0392B)
 
 
@@ -285,6 +291,8 @@ class PanelView(discord.ui.View):
         row = db.get_guild(bot.db, interaction.guild_id)
         if not row:
             return await interaction.response.send_message("Bot is not set up yet.", ephemeral=True)
+        if text := loa_block(interaction.guild_id, interaction.user.id, db.today_utc()):
+            return await interaction.response.send_message(text, ephemeral=True)
         if not interaction.user.get_role(row["member_role_id"]):
             return await interaction.response.send_message(
                 "Only guild members can log donations.", ephemeral=True)
@@ -373,6 +381,8 @@ class AttendView(discord.ui.View):
         row = db.get_guild(bot.db, interaction.guild_id)
         if not row:
             return await interaction.response.send_message("Bot is not set up yet.", ephemeral=True)
+        if text := loa_block(interaction.guild_id, interaction.user.id, db.today_utc()):
+            return await interaction.response.send_message(text, ephemeral=True)
         if not interaction.user.get_role(row["member_role_id"]):
             return await interaction.response.send_message(
                 "Only guild members can log attendance.", ephemeral=True)
@@ -1274,6 +1284,8 @@ async def log_donation(interaction: discord.Interaction, member: discord.Member,
     if not ign:
         return await interaction.response.send_message("Member has no linked IGN.", ephemeral=True)
     date = db.yesterday_utc() if day and day.value == "yesterday" else db.today_utc()
+    if text := loa_block(interaction.guild_id, member.id, date, f"{member.mention} is"):
+        return await interaction.response.send_message(text, ephemeral=True)
     try:
         db.record(bot.db, interaction.guild_id, member.id, member.display_name, ign, date,
                   logged_by=interaction.user.id)
@@ -1298,13 +1310,16 @@ async def log_many(interaction: discord.Interaction, members: str, day: app_comm
     if not ids:
         return await interaction.response.send_message("@mention the members to log, e.g. @Ann @Bob.", ephemeral=True)
     date = db.yesterday_utc() if day and day.value == "yesterday" else db.today_utc()
-    logged, already, unlinked = [], [], []
+    logged, already, unlinked, on_loa = [], [], [], []
     for i in ids:
         member = interaction.guild.get_member(i)
         name = member.display_name if member else str(i)
         ign = db.get_ign(bot.db, interaction.guild_id, i)
         if not ign:
             unlinked.append(name)
+            continue
+        if loa_block(interaction.guild_id, i, date):
+            on_loa.append(ign)
             continue
         try:
             db.record(bot.db, interaction.guild_id, i, name, ign, date, logged_by=interaction.user.id)
@@ -1319,6 +1334,8 @@ async def log_many(interaction: discord.Interaction, members: str, day: app_comm
         lines.append(f"Already donated that day: {board.join_capped([esc(n) for n in already], 500)}")
     if unlinked:
         lines.append(f"Not logged (no linked IGN): {board.join_capped([esc(n) for n in unlinked], 500)}")
+    if on_loa:
+        lines.append(f"Not logged (on LOA): {board.join_capped([esc(n) for n in on_loa], 500)}")
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
     if logged:
         await audit(interaction, f"logged donations for {len(logged)} member(s) on {date} with /log_many: "
@@ -1707,6 +1724,8 @@ async def boss_add(interaction: discord.Interaction, member: discord.Member, dat
     ign = db.get_ign(bot.db, interaction.guild_id, member.id)
     if not ign:
         return await interaction.response.send_message("Member has no linked IGN.", ephemeral=True)
+    if text := loa_block(interaction.guild_id, member.id, day, f"{member.mention} is"):
+        return await interaction.response.send_message(text, ephemeral=True)
     found = find_boss(interaction.guild_id, day, boss)
     if not found:
         return await interaction.response.send_message(f"No guild boss found on {day}.", ephemeral=True)
@@ -2130,6 +2149,8 @@ class XpPanelView(discord.ui.View):
         row = db.get_guild(bot.db, interaction.guild_id)
         if not row or not row["xp_review_channel_id"]:
             return await interaction.response.send_message("XP logging is not set up yet.", ephemeral=True)
+        if text := loa_block(interaction.guild_id, interaction.user.id, db.today_utc()):
+            return await interaction.response.send_message(text, ephemeral=True)
         if not interaction.user.get_role(row["member_role_id"]):
             return await interaction.response.send_message("Only guild members can log XP.", ephemeral=True)
         ign = db.get_ign(bot.db, interaction.guild_id, interaction.user.id)
@@ -2183,6 +2204,8 @@ class XpRequestView(discord.ui.View):
         req = self.request(interaction)
         if not req or req["status"] != "pending":
             return await interaction.response.send_message("This request was already answered.", ephemeral=True)
+        if text := loa_block(interaction.guild_id, req["discord_id"], req["day_utc"], f"<@{req['discord_id']}> is"):
+            return await interaction.response.send_message(f"{text} Deny this request.", ephemeral=True)
         try:
             db.xp_set(bot.db, interaction.guild_id, req["discord_id"], req["day_utc"], interaction.user.id,
                       gain=XP_CAP)
@@ -2264,6 +2287,7 @@ async def xp_log(interaction: discord.Interaction, member: discord.Member,
     if not await require_staff(interaction):
         return
     day, ign, error = xp_target(interaction, member, date)
+    error = error or loa_block(interaction.guild_id, member.id, day, f"{member.mention} is")
     if error:
         return await interaction.response.send_message(error, ephemeral=True)
     try:
