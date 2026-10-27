@@ -1,7 +1,7 @@
 from datetime import date, datetime, timedelta, timezone
 
 import db
-from board import (attend_board_data, bar, dashboard_stats, best_streak, member_card, streak, top_streaks, attend_data_sections, attend_report, board_data, boss_lists, member_day,
+from board import (boss_streak, log_all_plan, attend_board_data, bar, dashboard_stats, best_streak, member_card, streak, top_streaks, attend_data_sections, attend_report, board_data, boss_lists, member_day,
                    data_sections, day_lists, join_capped, link_lines, log_all, member_ids, missed_in_row, next_reset_ts, next_week_ts, not_donated,
                    monthly_csv, monthly_report, pack_lines, paginate, short, weekly_leaderboard, xp_cap_counts, xp_day, xp_week_totals)
 
@@ -91,7 +91,7 @@ def test_data_sections_split_the_guild_three_ways():
 
 def test_data_sections_empty_guild():
     conn = conn_with()
-    assert data_sections(conn, G, [], DAY) == {"donated": [], "not_donated": [], "not_linked": []}
+    assert data_sections(conn, G, [], DAY) == {"donated": [], "not_donated": [], "on_loa": [], "not_linked": []}
 
 
 def test_short_cuts_then_escapes():
@@ -113,9 +113,9 @@ def test_day_lists_splits_one_past_day():
     conn = conn_with((1, "Alpha"), (2, "Beta"), (3, None))
     db.record(conn, G, 1, "A", "Alpha", YDAY)
     db.record(conn, G, 2, "B", "Beta", DAY)
-    donated, waiting = day_lists(conn, G, [(1, "A"), (2, "B"), (3, "C")], DAY)
+    donated, waiting, on_loa = day_lists(conn, G, [(1, "A"), (2, "B"), (3, "C")], DAY)
     assert [(name, ign) for name, ign, _ in donated] == [("B", "Beta")]
-    assert waiting == ["Alpha", "C (not linked)"]
+    assert waiting == ["Alpha", "C (not linked)"] and on_loa == []
 
 
 def test_attend_board_data():
@@ -137,7 +137,7 @@ def test_attend_data_sections():
     conn = conn_with((1, "Bob"), (2, "ann"))
     tracked = [(1, "b"), (2, "a"), (3, "Cy")]  # Cy is not linked: not in these lists
     assert attend_data_sections(conn, G, tracked, datetime(2026, 10, 22, 1, tzinfo=timezone.utc)) == (
-        None, {"attended": [], "not_attended": [], "today_totals": [("ann", "0/0"), ("Bob", "0/0")]})
+        None, {"attended": [], "not_attended": [], "attend_on_loa": [], "today_totals": [("ann", "0/0"), ("Bob", "0/0")]})
     for hour in (2, 8):
         db.add_boss(conn, G, f"2026-10-22T0{hour}:00:00+00:00")
     first = db.get_boss(conn, G, "2026-10-22T02:00:00+00:00")["id"]
@@ -158,8 +158,8 @@ def test_boss_lists_and_member_day():
         db.add_boss(conn, G, f"2026-10-22T{hour:02}:00:00+00:00")
     first = db.get_boss(conn, G, "2026-10-22T02:00:00+00:00")["id"]
     db.attend(conn, first, 1, "a", "Ann")
-    attended, waiting = boss_lists(conn, G, [(1, "a"), (2, "Bo")], first)
-    assert [row[:2] for row in attended] == [("a", "Ann")] and waiting == ["Bo (not linked)"]
+    attended, waiting, on_loa = boss_lists(conn, G, [(1, "a"), (2, "Bo")], first)
+    assert [row[:2] for row in attended] == [("a", "Ann")] and waiting == ["Bo (not linked)"] and on_loa == []
     two = int(datetime(2026, 10, 22, 2, tzinfo=timezone.utc).timestamp())
     now = datetime(2026, 10, 22, 9, tzinfo=timezone.utc)  # 14:00 not started yet
     assert member_day(conn, G, 1, DAY, now) == [(two, True), (two + 6 * 3600, False)]
@@ -259,7 +259,7 @@ def test_monthly_report_and_boss_streak():
     assert report["rows"] == [("Aa", "one", 1, 2), ("Bb", "two", 0, 1)]
     assert (report["boss_total"], report["days_in_month"]) == (3, 31)
     assert report["streaks"] == [("Bb", 1), ("Aa", 0)]
-    assert monthly_csv(report).splitlines()[1] == "Aa,one,1,2,3"
+    assert monthly_csv(report).splitlines()[1] == "Aa,one,1,2,3,0"
 
 
 def test_dashboard_stats():
@@ -289,3 +289,94 @@ def test_xp_day_and_week_reset():
     sunday_night = datetime(2026, 10, 25, 23, 59, tzinfo=timezone.utc)
     assert next_week_ts(sunday_night) == int(datetime(2026, 10, 26, tzinfo=timezone.utc).timestamp())
     assert next_week_ts(sunday_night + timedelta(minutes=1)) == int(datetime(2026, 11, 2, tzinfo=timezone.utc).timestamp())
+
+
+def on_leave(conn, member, start, days):
+    db.approve_loa(conn, G, db.loa_request(conn, G, member, "trip", days, start, start), 9, start)
+
+
+def test_streak_skips_loa_days():
+    days = {"2026-10-18", "2026-10-19", "2026-10-22"}
+    loa = {"2026-10-20", "2026-10-21"}
+    assert streak(days, "2026-10-22") == 1  # without LOA the gap breaks it
+    assert streak(days, "2026-10-22", loa) == 3  # LOA days neither count nor break
+    assert streak({"2026-10-19"}, "2026-10-22", loa | {"2026-10-22"}) == 1  # today on LOA, nothing logged
+    assert best_streak(days) == 2 and best_streak(days, loa) == 3
+    assert best_streak({"2026-10-18", "2026-10-22"}, {"2026-10-20"}) == 1  # a gap not fully LOA still breaks
+
+
+def test_loa_member_is_not_waiting_and_shows_as_loa():
+    conn = conn_with((1, "Alpha"), (2, "Beta"))
+    on_leave(conn, 1, "2026-10-21", 3)  # 21st to 23rd
+    tracked = [(1, "A"), (2, "B")]
+    assert not_donated(conn, G, tracked, DAY) == [(2, "Beta")]
+    assert [r[0] for r in not_donated(conn, G, tracked, "2026-10-24")] == [1, 2]  # leave is over
+    assert data_sections(conn, G, tracked, DAY)["on_loa"] == [("Alpha", "2026-10-23")]
+    assert data_sections(conn, G, tracked, DAY)["not_donated"] == [("B", "Beta")]
+    donated, waiting, on_loa = day_lists(conn, G, tracked, YDAY)
+    assert (waiting, on_loa) == (["Beta"], [("Alpha", "2026-10-23")])
+    assert day_lists(conn, G, [(2, "B")], DAY)[2] == [("Alpha", "2026-10-23")]  # lost the role: still listed
+    to_log, _ = log_all_plan(conn, G, tracked, DAY, 0)
+    assert [i for i, *_ in to_log] == [2]  # /log_all skips the member on LOA
+
+
+def test_member_card_with_loa():
+    conn = conn_with((1, "Alpha"))
+    for day in ("2026-10-18", "2026-10-19", "2026-10-22"):
+        db.record(conn, G, 1, "A", "Alpha", day)
+    on_leave(conn, 1, "2026-10-20", 2)  # 20th and 21st
+    card = member_card(conn, G, [], 1, datetime(2026, 10, 22, 9, tzinfo=timezone.utc))
+    assert card["loa"] is None and card["streak"] == 3 and card["best"] == 3
+    assert card["month_loa"] == 2 and card["month_elapsed"] == 20  # 22 days minus 2 LOA
+    assert card["last_14_loa"][-3:] == [True, True, False]
+    on_card = member_card(conn, G, [], 1, datetime(2026, 10, 21, 9, tzinfo=timezone.utc))
+    assert on_card["loa"] == "2026-10-21" and on_card["last_14_loa"][-1]
+
+
+def test_boss_streak_and_missed_skip_loa_days():
+    conn = conn_with((1, "Ann"), (2, "Bob"))
+    for day in ("2026-10-20", "2026-10-21", "2026-10-22"):
+        db.add_boss(conn, G, f"{day}T08:00:00+00:00")
+    ids = {d: db.get_boss(conn, G, f"{d}T08:00:00+00:00")["id"] for d in ("2026-10-20", "2026-10-21", "2026-10-22")}
+    db.attend(conn, ids["2026-10-22"], 1, "a", "Ann")
+    db.attend(conn, ids["2026-10-20"], 1, "a", "Ann")
+    on_leave(conn, 1, "2026-10-21", 1)
+    now = datetime(2026, 10, 22, 12, tzinfo=timezone.utc)
+    bosses = db.started_bosses(conn, G, now.isoformat(timespec="seconds"))
+    attended = db.attended_bosses(conn, G)[1]
+    assert boss_streak(bosses, attended, now) == 1
+    assert boss_streak(bosses, attended, now, {"2026-10-21"}) == 2
+    assert missed_in_row(conn, G, [(1, "a"), (2, "b")], now, 3) == (3, ["Bob"])
+    on_leave(conn, 2, "2026-10-20", 3)  # Bob on LOA for all three
+    assert missed_in_row(conn, G, [(1, "a"), (2, "b")], now, 3) == (3, [])
+
+
+def test_dashboard_stats_and_attendance_lists_with_loa():
+    conn = conn_with((1, "Aa"), (2, "Bb"))
+    on_leave(conn, 2, "2026-10-21", 2)  # 21st and 22nd
+    now = datetime(2026, 10, 22, 12, tzinfo=timezone.utc)  # a Thursday: week since Mon 19th = 4 days
+    stats = dashboard_stats(conn, G, [(1, "a")], now)  # Bb lost the member role for the leave
+    assert stats["on_loa"] == [("Bb", "2026-10-22")]
+    assert stats["stale_links"] == []  # no role is expected while on LOA
+    assert stats["week_rate"] == (0, 4)
+    both = dashboard_stats(conn, G, [(1, "a"), (2, "b")], now)  # role not swapped yet
+    assert both["week_rate"] == (0, 4)  # Bb is on LOA today, so Bb is left out even with the role
+    back = dashboard_stats(conn, G, [(1, "a"), (2, "b")], datetime(2026, 10, 24, 12, tzinfo=timezone.utc))
+    assert back["week_rate"] == (0, 6 + 6 - 2)  # Mon 19th to Sat 24th: Aa 6 days, Bb 6 minus 2 LOA days
+    db.add_boss(conn, G, "2026-10-22T08:00:00+00:00")
+    info, sections = attend_data_sections(conn, G, [(1, "a")], now)
+    assert sections["attend_on_loa"] == [("Bb", "2026-10-22")] and sections["not_attended"] == [("a", "Aa")]
+    boss_id = db.get_boss(conn, G, "2026-10-22T08:00:00+00:00")["id"]
+    assert boss_lists(conn, G, [(1, "a"), (2, "b")], boss_id)[1:] == (["Aa"], [("Bb", "2026-10-22")])
+
+
+def test_xp_and_monthly_with_loa():
+    conn = conn_with((1, "Aa"), (2, "Bb"))
+    on_leave(conn, 2, "2026-10-22", 1)
+    tracked = [(1, "a"), (2, "b")]
+    assert [r[2] for r in xp_day(conn, G, tracked, DAY)] == ["Aa"]
+    assert [r[2] for r in xp_day(conn, G, tracked, YDAY)] == ["Aa", "Bb"]
+    assert xp_week_totals(conn, G, tracked, DAY) == {1: 0}
+    report = monthly_report(conn, G, tracked, "2026-10", datetime(2026, 11, 1, tzinfo=timezone.utc))
+    assert report["loa_days"] == {"Aa": 0, "Bb": 1}
+    assert monthly_csv(report).splitlines()[2].endswith(",1")

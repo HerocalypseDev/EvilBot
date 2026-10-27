@@ -102,13 +102,16 @@ async def refresh_board(guild):
 DATA_SECTIONS = {
     "donated": ("Donated today", ("Discord name", "In-game name", "Donated at")),
     "not_donated": ("Not donated yet", ("Discord name", "In-game name")),
+    "on_loa": ("On LOA", ("In-game name", "Last LOA day")),
     "not_linked": ("Not linked", ("In-game name",)),
 }
 ATTEND_SECTIONS = {  # the attendance data channel, same layout
     "attended": ("Attended", ("Discord name", "In-game name", "Logged at")),
     "not_attended": ("Not attended", ("Discord name", "In-game name")),
+    "attend_on_loa": ("On LOA", ("In-game name", "Last LOA day")),
     "today_totals": ("Bosses today (UTC day)", ("In-game name", "Attended")),
 }
+ALWAYS_OPEN = {"attend_on_loa", "today_totals"}  # attendance sections that show data between bosses too
 data_pages = {}  # (guild_id, section) -> page shown. Resets to page 1 after a restart.
 
 
@@ -118,7 +121,7 @@ def data_header_embed(sections, guild):
         title="Data",
         description=f"{db.today_utc()} (UTC) · resets <t:{board.next_reset_ts()}:t> (your local time)\n"
                     f"Donated: **{counts['donated']}** · Not donated: **{counts['not_donated']}** · "
-                    f"Not linked: **{counts['not_linked']}**"), guild)
+                    f"On LOA: **{counts['on_loa']}** · Not linked: **{counts['not_linked']}**"), guild)
 
 
 def closed_text(next_ts):
@@ -210,11 +213,11 @@ async def refresh_attend_data(guild):
             upcoming = db.next_boss(bot.db, guild.id, now.isoformat(timespec="seconds"))
             text = closed_text(upcoming and int(iso_utc(upcoming["boss_time"]).timestamp()))
             embeds = [brand(discord.Embed(title="Boss attendance data", description=text), guild)]
-            embeds += [data_section_embed(guild.id, key, sections[key]) if key == "today_totals" else
+            embeds += [data_section_embed(guild.id, key, sections[key]) if key in ALWAYS_OPEN else
                        brand(discord.Embed(title=ATTEND_SECTIONS[key][0], description="Closed until the next guild boss."))
                        for key in ATTEND_SECTIONS]
         return await show_sections(guild, channel, row["attend_data_message_ids"], "attend_data_message_ids",
-                                   embeds, ATTEND_SECTIONS, buttons=None if is_open else {"today_totals"})
+                                   embeds, ATTEND_SECTIONS, buttons=None if is_open else ALWAYS_OPEN)
 
 
 async def show_sections(guild, channel, ids_json, ids_field, embeds, keys, buttons=None):
@@ -449,27 +452,33 @@ class UndoLogAllView(discord.ui.View):
 
 class HistoryView(discord.ui.View):
     """One UTC day: donated, then not donated, 15 rows per page with Previous / Next buttons.
-    labels = (title, done, not done, not done field); also used for one boss's attendance."""
+    labels = (title, done, not done, not done field); also used for one boss's attendance.
+    loa = [(in-game name, last LOA day)] shown last, under their own heading."""
 
-    def __init__(self, labels, donated, waiting):
+    def __init__(self, labels, donated, waiting, loa=()):
         super().__init__(timeout=300)
         self.labels, self.page = labels, 0
         self.rows = ([("donated", f"{board.short(n)} · {board.short(i)} · <t:{t}:t>") for n, i, t in donated]
-                     + [("waiting", discord.utils.escape_markdown(n)) for n in waiting])
-        self.counts = (len(donated), len(waiting))
+                     + [("waiting", discord.utils.escape_markdown(n)) for n in waiting]
+                     + [("loa", f"{board.short(ign)} · last LOA day {last}") for ign, last in loa])
+        self.counts = (len(donated), len(waiting), len(loa))
         self._update_buttons()
 
     def embed(self):
         chunk, self.page, pages = board.paginate(self.rows, self.page, DATA_PAGE)  # also clamps self.page
         donated = [text for kind, text in chunk if kind == "donated"]
         waiting = [text for kind, text in chunk if kind == "waiting"]
+        loa = [text for kind, text in chunk if kind == "loa"]
         title, done, not_done, not_done_field = self.labels
         embed = discord.Embed(title=title,
-                              description=f"{done}: **{self.counts[0]}** · {not_done}: **{self.counts[1]}**")
+                              description=f"{done}: **{self.counts[0]}** · {not_done}: **{self.counts[1]}**"
+                                          + (f" · On LOA: **{self.counts[2]}**" if self.counts[2] else ""))
         if donated:
             embed.add_field(name=f"{done} ({self.counts[0]})", value="\n".join(donated), inline=False)
         if waiting:
             embed.add_field(name=f"{not_done_field} ({self.counts[1]})", value="\n".join(waiting), inline=False)
+        if loa:
+            embed.add_field(name=f"On LOA ({self.counts[2]})", value="\n".join(loa), inline=False)
         return brand(embed, footer=f"Page {self.page + 1}/{pages}")
 
     def _update_buttons(self):
@@ -763,7 +772,7 @@ async def post_monthly(guild, row, now):
     rows, total, esc = report["rows"], report["boss_total"], discord.utils.escape_markdown
     title_month = datetime.strptime(month, "%Y-%m").strftime("%B %Y")
     donated = sum(r[2] for r in rows)
-    possible = len(rows) * report["days_in_month"]
+    possible = len(rows) * report["days_in_month"] - sum(report["loa_days"].values())
     embed = discord.Embed(title=f"Monthly report · {title_month}", description=f"{len(rows)} linked members (UTC days)")
     embed.add_field(name="Donations", value=f"**{donated}** of {possible} member-days"
                     + (f" ({round(100 * donated / possible)}%)" if possible else ""))
@@ -1046,22 +1055,25 @@ async def me(interaction: discord.Interaction):
     embed.set_thumbnail(url=user.display_avatar.url)
 
     reset = f"<t:{board.next_reset_ts()}:R>"
-    embed.add_field(name="Today", value="**Donated**" if card["today"] else f"**Not yet**\nResets {reset}")
+    embed.add_field(name="Today", value=f"**On LOA** until the end of {card['loa']}" if card["loa"] else
+                    "**Donated**" if card["today"] else f"**Not yet**\nResets {reset}")
     badge = board.badge(card["streak"])
     embed.add_field(name="Current streak", value=f"**{card['streak']}** days" + (f"\n{badge}" if badge else ""))
     embed.add_field(name="Best streak", value=f"**{card['best']}** days")
 
-    month_pct = round(100 * card["month_days"] / card["month_elapsed"])
+    month_pct = round(100 * card["month_days"] / card["month_elapsed"]) if card["month_elapsed"] else 0
     embed.add_field(name="This month (UTC)",
-                    value=f"**{card['month_days']}** of {card['month_elapsed']} days\n"
+                    value=f"**{card['month_days']}** of {card['month_elapsed']} days"
+                          + (f" (+{card['month_loa']} on LOA)" if card["month_loa"] else "") + "\n"
                           f"`{board.bar(card['month_days'], card['month_elapsed'])}` {month_pct}%")
     embed.add_field(name="Rank this month", value=f"**#{card['month_rank']}** of {card['members']}")
 
     embed.add_field(name="All time", value=f"**{card['all_days']}** days")
     embed.add_field(name="Rank all time", value=f"**#{card['all_rank']}** of {card['members']}")
 
-    strip = "".join("█" if done else "░" for done in card["last_14"])
-    embed.add_field(name="Last 14 days", value=f"`{strip}`\n14 days ago, left · today, right", inline=False)
+    strip = "".join("█" if done else "▒" if away else "░" for done, away in zip(card["last_14"], card["last_14_loa"]))
+    embed.add_field(name="Last 14 days", value=f"`{strip}`\n14 days ago, left · today, right"
+                    + (" · ▒ = on LOA" if "▒" in strip else ""), inline=False)
 
     if card["boss_total"]:
         embed.add_field(name="Guild boss this month",
@@ -1081,16 +1093,18 @@ async def me(interaction: discord.Interaction):
         mine = totals.get(user.id, 0)
         embed.add_field(name="XP this week", value=f"**{mine:,}** XP · resets <t:{board.next_week_ts()}:R>")
         embed.add_field(name="XP today", value=f"**{week[-1]['gain']:,}**" if week[-1]["gain"] is not None
-                        else "Not logged")
+                        else "**On LOA**" if card["loa"] else "Not logged")
         embed.add_field(name="XP rank this week", value=f"**#{1 + sum(t > mine for t in totals.values())}** of "
                         f"{len(totals)} · hit cap {sum(d['gain'] is not None and d['gain'] >= XP_CAP for d in week)}"
                         f" of {len(week)} days")
         cap_days = db.xp_cap_days(bot.db, interaction.guild_id, user.id)
-        embed.add_field(name="XP cap streak", value=f"**{board.streak(cap_days, today)}** days · best "
-                        f"{board.best_streak(cap_days)}")
+        loa_days = db.loa_days(bot.db, interaction.guild_id).get(user.id, set())
+        embed.add_field(name="XP cap streak", value=f"**{board.streak(cap_days, today, loa_days)}** days · best "
+                        f"{board.best_streak(cap_days, loa_days)}")
         embed.add_field(name="XP by day (✓ = hit cap)", inline=False, value="```\n" + "\n".join(
             f"{datetime.strptime(d['day'], '%Y-%m-%d'):%a}  "
-            + (f"{d['gain']:>6,}{' ✓' if d['gain'] >= XP_CAP else ''}" if d["gain"] is not None else "     -")
+            + (f"{d['gain']:>6,}{' ✓' if d['gain'] >= XP_CAP else ''}" if d["gain"] is not None
+               else "   LOA" if d["day"] in loa_days else "     -")
             for d in week) + "\n```")
     await interaction.response.send_message(embed=brand(embed, footer="Days and ranks use the UTC day"),
                                             ephemeral=True)
@@ -1237,9 +1251,10 @@ async def history(interaction: discord.Interaction, date: str | None = None):
     row = db.get_guild(bot.db, interaction.guild_id)
     if not row:
         return await interaction.response.send_message("Run /setup first.", ephemeral=True)
-    donated, waiting = board.day_lists(bot.db, interaction.guild_id,
-                                       tracked_members(interaction.guild, row["member_role_id"]), day)
-    view = HistoryView((f"Donations {day} (UTC)", "Donated", "Not donated", "Not donated yet"), donated, waiting)
+    donated, waiting, on_loa = board.day_lists(bot.db, interaction.guild_id,
+                                               tracked_members(interaction.guild, row["member_role_id"]), day)
+    view = HistoryView((f"Donations {day} (UTC)", "Donated", "Not donated", "Not donated yet"), donated, waiting,
+                       on_loa)
     await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
 
 
@@ -1645,10 +1660,10 @@ async def boss_attendance(interaction: discord.Interaction, date: str | None = N
     found = find_boss(interaction.guild_id, day, boss)
     if not found:
         return await interaction.response.send_message(f"No guild boss found on {day}.", ephemeral=True)
-    attended, waiting = board.boss_lists(bot.db, interaction.guild_id,
-                                         tracked_members(interaction.guild, row["member_role_id"]), found["id"])
+    attended, waiting, on_loa = board.boss_lists(bot.db, interaction.guild_id,
+                                                 tracked_members(interaction.guild, row["member_role_id"]), found["id"])
     labels = (f"Guild boss {day} {found['boss_time'][11:16]} UTC", "Attended", "Not attended", "Not attended")
-    view = HistoryView(labels, attended, waiting)
+    view = HistoryView(labels, attended, waiting, on_loa)
     await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
 
 
@@ -1799,7 +1814,7 @@ def xp_invalid_text(error):
     return f"That would make {day} (UTC) a gain of **{gain:,}** XP. It must be from 0 to {cap:,}."
 
 
-def xp_panel_embed(guild, rows):
+def xp_panel_embed(guild, rows, loa=()):
     capped = [discord.utils.escape_markdown(ign) for _, _, ign, gain in rows if gain is not None and gain >= XP_CAP]
     embed = discord.Embed(title="Guild XP",
                           description=f"Daily cap: **{XP_CAP:,}** XP. The day resets <t:{board.next_reset_ts()}:t>, "
@@ -1808,6 +1823,9 @@ def xp_panel_embed(guild, rows):
                                       "Officers log everyone else.")
     embed.add_field(name=f"Hit cap today ({len(capped)} of {len(rows)})",
                     value=board.join_capped(capped, sep="\n") or "Nobody yet.", inline=False)
+    if loa:
+        embed.add_field(name=f"On LOA ({len(loa)})", inline=False, value=board.join_capped(
+            [f"{discord.utils.escape_markdown(ign)} (until {last})" for ign, last in loa], sep="\n"))
     return brand(embed, guild, "Shows approved logs only")
 
 
@@ -1818,7 +1836,7 @@ async def refresh_xp_panel(guild):
         channel = row and row["xp_channel_id"] and guild.get_channel(row["xp_channel_id"])
         if not channel:
             return
-        embed = xp_panel_embed(guild, xp_rows(guild, row, db.today_utc()))
+        embed = xp_panel_embed(guild, xp_rows(guild, row, db.today_utc()), board.loa_on(bot.db, guild.id, db.today_utc()))
         old = row["xp_message_id"] and channel.get_partial_message(row["xp_message_id"])
         try:
             if old and channel.last_message_id == old.id:
@@ -2026,6 +2044,7 @@ async def xp_day(interaction: discord.Interaction, date: str | None = None):
     esc = discord.utils.escape_markdown
     lines = [f"{esc(name)} · {esc(ign)} · " + (f"{gain:,} XP" if gain is not None else "not logged")
              + (" · request pending" if i in pending else "") for i, name, ign, gain in rows]
+    lines += [f"{esc(ign)} · on LOA (last day {last})" for ign, last in board.loa_on(bot.db, interaction.guild_id, day)]
     capped = sum(gain is not None and gain >= XP_CAP for *_, gain in rows)
     missing = sum(gain is None for *_, gain in rows)
     header = (f"**XP on {day} (UTC)** · hit cap: {capped} · under cap: {len(rows) - capped - missing} · "
@@ -2111,7 +2130,7 @@ async def dashboard(interaction: discord.Interaction):
     if not row:
         return await interaction.response.send_message("Run /setup first.", ephemeral=True)
     guild, now = interaction.guild, datetime.now(timezone.utc)
-    tracked = tracked_members(guild, row["member_role_id"])
+    tracked = board.without_loa(bot.db, guild.id, tracked_members(guild, row["member_role_id"]), db.today_utc())[0]
     data = board.board_data(bot.db, guild.id, tracked, db.today_utc(), db.yesterday_utc())
     linked = db.get_igns(bot.db, guild.id)
     embed = discord.Embed(title="Staff dashboard", description=f"{db.today_utc()} (UTC) · resets <t:{data['reset_ts']}:R>")
@@ -2147,6 +2166,9 @@ async def dashboard(interaction: discord.Interaction):
     embed.add_field(name=f"Streaks at risk ({len(stats['at_risk'])})", inline=False,
                     value=board.join_capped([f"{esc(ign)} ({n} days)" for ign, n in stats["at_risk"]])
                     or "Nobody: every streak of 3+ days is logged today.")
+    if stats["on_loa"]:
+        embed.add_field(name=f"On LOA ({len(stats['on_loa'])})", inline=False, value=board.join_capped(
+            [f"{esc(ign)} (until {last})" for ign, last in stats["on_loa"]]))
     problems = []
     if stats["not_linked"]:
         problems.append(f"**Not linked ({len(stats['not_linked'])}):** "

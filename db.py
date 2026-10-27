@@ -749,3 +749,17 @@ def claim_loa_end(conn, loa_id):
     with conn:
         return conn.execute("UPDATE loa SET status = 'ended', notified_at = ? WHERE id = ? "
                             "AND status = 'approved' AND notified_at IS NULL", (now_iso(), loa_id)).rowcount == 1
+
+
+def loa_days(conn, guild_id):
+    """{discord_id: set of UTC days on approved leave}."""
+    days = {}
+    for r in conn.execute("SELECT discord_id, start_day, end_day FROM loa WHERE guild_id = ? "
+                          "AND status IN ('approved','ended')", (guild_id,)):
+        length = (datetime.strptime(r["end_day"], "%Y-%m-%d") - datetime.strptime(r["start_day"], "%Y-%m-%d")).days
+        days.setdefault(r["discord_id"], set()).update(add_days(r["start_day"], k) for k in range(length + 1))
+    return days
+
+
+def boss_day(conn, boss_id):
+    return conn.execute("SELECT day_utc FROM bosses WHERE id = ?", (boss_id,)).fetchone()[0]
