@@ -2331,6 +2331,7 @@ async def strike_remove(interaction: discord.Interaction, strike_id: int):
 
     member = interaction.guild.get_member(strike["discord_id"])
     remaining = len(db.get_strikes(bot.db, interaction.guild_id, strike["discord_id"]))
+    name = member.display_name if member else f"Unknown ({strike['discord_id']})"
 
     # DM the member
     await dm_member(member,
@@ -2342,7 +2343,6 @@ async def strike_remove(interaction: discord.Interaction, strike_id: int):
     channel = row and row["strike_channel_id"] and interaction.guild.get_channel(row["strike_channel_id"])
     if channel:
         ign = db.get_ign(bot.db, interaction.guild_id, strike["discord_id"]) or "not linked"
-        name = member.display_name if member else f"Unknown ({strike['discord_id']})"
         embed = discord.Embed(title="Strike removed", colour=discord.Colour.green())
         embed.add_field(name="Member", value=f"{discord.utils.escape_markdown(name)} · **{discord.utils.escape_markdown(ign)}**")
         embed.add_field(name="Removed Strike ID", value=str(strike_id))
@@ -2356,12 +2356,13 @@ async def strike_remove(interaction: discord.Interaction, strike_id: int):
 
     await interaction.response.send_message(
         f"Removed strike **#{strike_id}**. "
-        f"{discord.utils.escape_markdown(member.display_name if member else 'Unknown')} now has **{remaining}** strike(s).",
+        f"{discord.utils.escape_markdown(name)} now has **{remaining}** strike(s).",
         ephemeral=True,
         allowed_mentions=discord.AllowedMentions.none())
 
-    await audit(interaction, f"removed strike #{strike_id} from {member.display_name if member else strike['discord_id']}.")
-
+    # This is the important line that posts to the staff/audit channel
+    await audit(interaction, f"removed strike #{strike_id} from {name}.")
+    
 bot.tree.add_command(strike_group)
 
 # --- XP: officers log each member's weekly total; members press I hit cap for an officer to approve ---
