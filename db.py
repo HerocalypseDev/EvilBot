@@ -106,6 +106,14 @@ CREATE TABLE IF NOT EXISTS xp_requests (
     reviewed_at TEXT,
     UNIQUE (guild_id, discord_id, day_utc)
 );
+CREATE TABLE IF NOT EXISTS strikes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id    INTEGER NOT NULL,
+    discord_id  INTEGER NOT NULL,
+    reason      TEXT,
+    issued_by   INTEGER NOT NULL,
+    created_at  TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS loa (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id    INTEGER NOT NULL,
@@ -194,7 +202,8 @@ def connect(path):
                          ("welcome_channel_id", "INTEGER"), ("xp_channel_id", "INTEGER"),
                          ("xp_message_id", "INTEGER"), ("xp_review_channel_id", "INTEGER"),
                          ("loa_channel_id", "INTEGER"), ("loa_review_channel_id", "INTEGER"),
-                         ("loa_role_id", "INTEGER"), ("loa_message_id", "INTEGER")):  # columns added after the first release
+                         ("loa_role_id", "INTEGER"), ("loa_message_id", "INTEGER"))
+                         ("strike_channel_id", "INTEGER"):  # columns added after the first release
         if column not in have:
             conn.execute(f"ALTER TABLE guilds ADD COLUMN {column} {kind}")
     return conn
@@ -207,7 +216,8 @@ GUILD_FIELDS = {"panel_channel_id", "status_message_id", "officer_role_id",
                 "data_channel_id", "data_message_ids", "attend_channel_id",
                 "attend_message_id", "attend_data_channel_id", "attend_data_message_ids", "staff_channel_id",
                 "welcome_channel_id", "xp_channel_id", "xp_message_id", "xp_review_channel_id",
-                "loa_channel_id", "loa_review_channel_id", "loa_role_id", "loa_message_id"}
+                "loa_channel_id", "loa_review_channel_id", "loa_role_id", "loa_message_id", "strike_channel_id"},
+                
 
 
 def save_guild(conn, guild_id, **fields):
@@ -840,3 +850,27 @@ def leave_loa(conn, guild_id, discord_id, today):
                                  "AND status = 'pending'", (guild_id, discord_id)).rowcount
     current = loa_current(conn, guild_id, discord_id, today)
     return bool(cancelled or (current and end_loa(conn, guild_id, current["id"], today)))
+
+def add_strike(conn, guild_id, discord_id, reason, issued_by):
+    with conn:
+        return conn.execute(
+            "INSERT INTO strikes (guild_id, discord_id, reason, issued_by, created_at) VALUES (?, ?, ?, ?, ?)",
+            (guild_id, discord_id, reason, issued_by, now_iso())
+        ).lastrowid
+
+def get_strikes(conn, guild_id, discord_id=None):
+    if discord_id:
+        return conn.execute(
+            "SELECT * FROM strikes WHERE guild_id = ? AND discord_id = ? ORDER BY created_at DESC",
+            (guild_id, discord_id)
+        ).fetchall()
+    return conn.execute(
+        "SELECT * FROM strikes WHERE guild_id = ? ORDER BY created_at DESC",
+        (guild_id,)
+    ).fetchall()
+
+def strike_counts(conn, guild_id):
+    return {r[0]: r[1] for r in conn.execute(
+        "SELECT discord_id, COUNT(*) FROM strikes WHERE guild_id = ? GROUP BY discord_id",
+        (guild_id,)
+    )}

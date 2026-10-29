@@ -2043,19 +2043,18 @@ async def loa_setup(interaction: discord.Interaction, loa_channel: discord.TextC
 
 
 async def swap_loa_role(guild, row, member_id, on):
-    """On LOA: take the member role and give the On LOA role, so role pings skip the member. Off: the reverse.
+    """On LOA: give the On LOA role (keep the member role). Off: remove the On LOA role.
     Returns an error text, or None when done."""
     member, loa_role = guild.get_member(member_id), guild.get_role(row["loa_role_id"])
-    member_role = guild.get_role(row["member_role_id"])
-    if not (member and loa_role and member_role):
-        return "the member, the member role or the On LOA role was not found"
-    add, remove = (loa_role, member_role) if on else (member_role, loa_role)
-    try:  # add first: a failure half way must not leave the member with no access
-        await member.add_roles(add, reason="LOA")
-        await member.remove_roles(remove, reason="LOA")
+    if not (member and loa_role):
+        return "the member or the On LOA role was not found"
+    try:
+        if on:
+            await member.add_roles(loa_role, reason="LOA")
+        else:
+            await member.remove_roles(loa_role, reason="LOA")
     except discord.HTTPException as e:
         return str(e)
-
 
 async def finish_loa(guild, row, loa):
     """Give the member role back, then ping the member in the LOA channel and in a DM."""
