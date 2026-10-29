@@ -2256,9 +2256,10 @@ async def strike_give(interaction: discord.Interaction, member: discord.Member, 
             log.warning("Failed to post strike in guild %s: %s", interaction.guild_id, e)
 
     await interaction.response.send_message(
-        f"Gave strike **#{count}** to {member.mention}." + (f" Reason: {reason}" if reason else ""),
-        ephemeral=True)
-    await audit(interaction, f"gave strike #{count} to {member.mention}" + (f": {reason}" if reason else "."))
+            f"Gave strike **#{count}** to {discord.utils.escape_markdown(member.display_name)}."
+            + (f" Reason: {reason}" if reason else ""),
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none())
 
 @strike_group.command(name="member", description="Staff: see all strikes of a member.")
 async def strike_member(interaction: discord.Interaction, member: discord.Member):
