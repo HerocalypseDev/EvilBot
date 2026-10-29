@@ -874,3 +874,15 @@ def strike_counts(conn, guild_id):
         "SELECT discord_id, COUNT(*) FROM strikes WHERE guild_id = ? GROUP BY discord_id",
         (guild_id,)
     )}
+def get_strike(conn, guild_id, strike_id):
+    return conn.execute(
+        "SELECT * FROM strikes WHERE id = ? AND guild_id = ?",
+        (strike_id, guild_id)
+    ).fetchone()
+
+def remove_strike(conn, guild_id, strike_id):
+    with conn:
+        return conn.execute(
+            "DELETE FROM strikes WHERE id = ? AND guild_id = ?",
+            (strike_id, guild_id)
+        ).rowcount == 1

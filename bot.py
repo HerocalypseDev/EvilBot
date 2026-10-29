@@ -2296,6 +2296,54 @@ async def strike_list(interaction: discord.Interaction):
 
     await send_text(interaction, f"**Members with strikes** ({len(lines)})", lines, "strike_list.txt")
 
+@strike_group.command(name="remove", description="Staff: remove a strike by its ID.")
+@app_commands.describe(strike_id="The Strike ID shown in the strikes channel")
+async def strike_remove(interaction: discord.Interaction, strike_id: int):
+    if not await require_staff(interaction):
+        return
+
+    strike = db.get_strike(bot.db, interaction.guild_id, strike_id)
+    if not strike:
+        return await interaction.response.send_message(
+            f"No strike found with ID **{strike_id}**.", ephemeral=True)
+
+    if not db.remove_strike(bot.db, interaction.guild_id, strike_id):
+        return await interaction.response.send_message(
+            "Failed to remove the strike.", ephemeral=True)
+
+    member = interaction.guild.get_member(strike["discord_id"])
+    remaining = len(db.get_strikes(bot.db, interaction.guild_id, strike["discord_id"]))
+
+    # DM the member
+    await dm_member(member,
+        f"Your **EVIL has been pardoned** in **{interaction.guild.name}**.\n"
+        f"A strike has been removed. You now have **{remaining}** strike(s).")
+
+    # Log the removal in the strikes channel
+    row = db.get_guild(bot.db, interaction.guild_id)
+    channel = row and row["strike_channel_id"] and interaction.guild.get_channel(row["strike_channel_id"])
+    if channel:
+        ign = db.get_ign(bot.db, interaction.guild_id, strike["discord_id"]) or "not linked"
+        name = member.display_name if member else f"Unknown ({strike['discord_id']})"
+        embed = discord.Embed(title="Strike removed", colour=discord.Colour.green())
+        embed.add_field(name="Member", value=f"{discord.utils.escape_markdown(name)} · **{discord.utils.escape_markdown(ign)}**")
+        embed.add_field(name="Removed Strike ID", value=str(strike_id))
+        embed.add_field(name="Remaining strikes", value=str(remaining))
+        embed.add_field(name="Removed by", value=interaction.user.mention)
+        embed.timestamp = datetime.now(timezone.utc)
+        try:
+            await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException as e:
+            log.warning("Failed to post strike removal in guild %s: %s", interaction.guild_id, e)
+
+    await interaction.response.send_message(
+        f"Removed strike **#{strike_id}**. "
+        f"{discord.utils.escape_markdown(member.display_name if member else 'Unknown')} now has **{remaining}** strike(s).",
+        ephemeral=True,
+        allowed_mentions=discord.AllowedMentions.none())
+
+    await audit(interaction, f"removed strike #{strike_id} from {member.display_name if member else strike['discord_id']}.")
+
 bot.tree.add_command(strike_group)
 
 # --- XP: officers log each member's weekly total; members press I hit cap for an officer to approve ---
