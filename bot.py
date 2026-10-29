@@ -2278,6 +2278,7 @@ async def strike_give(interaction: discord.Interaction, member: discord.Member, 
             + (f" Reason: {reason}" if reason else ""),
             ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none())
+    await audit(interaction, f"gave strike #{count} to {member.display_name}" + (f": {reason}" if reason else "."))
 
 @strike_group.command(name="member", description="Staff: see all strikes of a member.")
 async def strike_member(interaction: discord.Interaction, member: discord.Member):
@@ -2362,7 +2363,7 @@ async def strike_remove(interaction: discord.Interaction, strike_id: int):
 
     # This is the important line that posts to the staff/audit channel
     await audit(interaction, f"removed strike #{strike_id} from {name}.")
-    
+
 bot.tree.add_command(strike_group)
 
 # --- XP: officers log each member's weekly total; members press I hit cap for an officer to approve ---
