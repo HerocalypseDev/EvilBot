@@ -2194,6 +2194,109 @@ async def loa_list(interaction: discord.Interaction):
     await send_text(interaction, f"**LOA** ({len(lines)})", lines or ["Nobody."], "loa_list.txt")
 
 
+# --- Strikes ---
+
+strike_group = app_commands.Group(name="strike", description="Member strikes (staff only).", guild_only=True)
+
+@strike_group.command(name="setup", description="Staff: set the private channel where strikes are logged.")
+async def strike_setup(interaction: discord.Interaction, channel: discord.TextChannel):
+    if not await require_staff(interaction):
+        return
+    if not db.get_guild(bot.db, interaction.guild_id):
+        return await interaction.response.send_message("Run /setup first.", ephemeral=True)
+    perms = channel.permissions_for(interaction.guild.me)
+    if not (perms.view_channel and perms.send_messages and perms.embed_links):
+        return await interaction.response.send_message(
+            f"I cannot post in {channel.mention}. Give the bot View Channel, Send Messages and Embed Links "
+            "there, then run /strike setup again.", ephemeral=True)
+    try:
+        await channel.send("⚠️ **Strikes channel** set. Only officers should be able to see this channel.")
+    except discord.HTTPException as e:
+        return await interaction.response.send_message(
+            f"Could not post in {channel.mention}: {e}", ephemeral=True)
+    db.save_guild(bot.db, interaction.guild_id, strike_channel_id=channel.id)
+    await interaction.response.send_message(
+        f"Strikes will be logged in {channel.mention}. Keep this channel private to officers only.",
+        ephemeral=True)
+    await audit(interaction, f"set the strikes channel to {channel.mention}.")
+
+@strike_group.command(name="give", description="Staff: give a strike to a member.")
+@app_commands.describe(member="The member to strike", reason="Reason for the strike (optional)")
+async def strike_give(interaction: discord.Interaction, member: discord.Member, reason: str | None = None):
+    if not await require_staff(interaction):
+        return
+    row = db.get_guild(bot.db, interaction.guild_id)
+    if not row:
+        return await interaction.response.send_message("Run /setup first.", ephemeral=True)
+
+    strike_id = db.add_strike(bot.db, interaction.guild_id, member.id, reason, interaction.user.id)
+    count = len(db.get_strikes(bot.db, interaction.guild_id, member.id))
+
+    # DM the member (same style used for XP approval and LOA)
+    reason_text = f"\n**Reason:** {reason}" if reason else ""
+    await dm_member(member,
+        f"You have received a **strike** in **{interaction.guild.name}**.\n"
+        f"This is strike **#{count}**.{reason_text}")
+
+    # Post in the private strikes channel
+    channel = row["strike_channel_id"] and interaction.guild.get_channel(row["strike_channel_id"])
+    if channel:
+        ign = db.get_ign(bot.db, interaction.guild_id, member.id) or "not linked"
+        embed = discord.Embed(title="Strike issued", colour=BRAND)
+        embed.add_field(name="Member", value=f"{discord.utils.escape_markdown(member.display_name)} · **{discord.utils.escape_markdown(ign)}**")
+        embed.add_field(name="Strike #", value=str(count))
+        embed.add_field(name="Issued by", value=interaction.user.mention)
+        if reason:
+            embed.add_field(name="Reason", value=reason, inline=False)
+        embed.set_footer(text=f"Strike ID: {strike_id}")
+        embed.timestamp = datetime.now(timezone.utc)
+        try:
+            await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException as e:
+            log.warning("Failed to post strike in guild %s: %s", interaction.guild_id, e)
+
+    await interaction.response.send_message(
+        f"Gave strike **#{count}** to {member.mention}." + (f" Reason: {reason}" if reason else ""),
+        ephemeral=True)
+    await audit(interaction, f"gave strike #{count} to {member.mention}" + (f": {reason}" if reason else "."))
+
+@strike_group.command(name="member", description="Staff: see all strikes of a member.")
+async def strike_member(interaction: discord.Interaction, member: discord.Member):
+    if not await require_staff(interaction):
+        return
+    strikes = db.get_strikes(bot.db, interaction.guild_id, member.id)
+    if not strikes:
+        return await interaction.response.send_message(f"{member.display_name} has no strikes.", ephemeral=True)
+
+    lines = []
+    for s in strikes:
+        reason = s["reason"] or "No reason given"
+        lines.append(f"**#{s['id']}** · <t:{int(datetime.fromisoformat(s['created_at']).timestamp())}:f> · "
+                     f"by <@{s['issued_by']}> · {discord.utils.escape_markdown(reason)}")
+
+    await send_text(interaction,
+                    f"**Strikes for {member.display_name}** ({len(strikes)})",
+                    lines, "strikes.txt")
+
+@strike_group.command(name="list", description="Staff: see all members who have strikes.")
+async def strike_list(interaction: discord.Interaction):
+    if not await require_staff(interaction):
+        return
+    counts = db.strike_counts(bot.db, interaction.guild_id)
+    if not counts:
+        return await interaction.response.send_message("Nobody has any strikes.", ephemeral=True)
+
+    sorted_counts = sorted(counts.items(), key=lambda x: (-x[1], x[0]))
+    lines = []
+    for discord_id, count in sorted_counts:
+        member = interaction.guild.get_member(discord_id)
+        name = member.display_name if member else f"Unknown ({discord_id})"
+        lines.append(f"**{discord.utils.escape_markdown(name)}** · {count} strike{'s' if count != 1 else ''}")
+
+    await send_text(interaction, f"**Members with strikes** ({len(lines)})", lines, "strike_list.txt")
+
+bot.tree.add_command(strike_group)
+
 # --- XP: officers log each member's weekly total; members press I hit cap for an officer to approve ---
 
 _xp_lock = asyncio.Lock()
