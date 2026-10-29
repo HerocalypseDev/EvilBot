@@ -566,20 +566,38 @@ bot = Bot()
 
 
 async def post_offline_notice():
-    """Replace each board with an offline notice and no button. Runs on /stop and Ctrl+C."""
-    notice = discord.Embed(title="Evil Donations — offline",
-                           description="Bot offline. Do not log donations. Contact an officer.",
-                           colour=discord.Colour.dark_grey(), timestamp=datetime.now(timezone.utc))
+    """Replace every board (donation, attendance, LOA, XP) with an offline notice and no buttons.
+    Data channels are left alone. Runs on /stop and Ctrl+C."""
+    notice = discord.Embed(
+        title="Evil Donations — offline",
+        description="Bot offline. Do not log donations, attendance, LOA or XP. Contact an officer.",
+        colour=discord.Colour.dark_grey(),
+        timestamp=datetime.now(timezone.utc)
+    )
+
     for guild in bot.guilds:
         row = db.get_guild(bot.db, guild.id)
-        channel = row and guild.get_channel(row["panel_channel_id"])
-        if not channel or not row["status_message_id"]:
+        if not row:
             continue
-        try:
-            await channel.get_partial_message(row["status_message_id"]).edit(embed=notice, view=None)
-        except discord.HTTPException as e:
-            log.warning("Offline notice failed in guild %s: %s", guild.id, e)
 
+        # List of (channel_id, message_id) for every board we want to turn offline
+        boards = [
+            (row["panel_channel_id"], row["status_message_id"]),          # Donation board
+            (row["attend_channel_id"], row["attend_message_id"]),         # Attendance board
+            (row["loa_channel_id"], row["loa_message_id"]),               # LOA board
+            (row["xp_channel_id"], row["xp_message_id"]),                 # XP board
+        ]
+
+        for channel_id, message_id in boards:
+            if not channel_id or not message_id:
+                continue
+            channel = guild.get_channel(channel_id)
+            if not channel:
+                continue
+            try:
+                await channel.get_partial_message(message_id).edit(embed=notice, view=None)
+            except discord.HTTPException as e:
+                log.warning("Offline notice failed in guild %s (channel %s): %s", guild.id, channel_id, e)
 
 async def send_reminder(guild, row):
     waiting = board.not_donated(bot.db, guild.id, tracked_members(guild, row["member_role_id"]),
