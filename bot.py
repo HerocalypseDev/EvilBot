@@ -29,18 +29,16 @@ intents = discord.Intents.default()
 intents.members = True  # privileged: needed for role checks and the not-donated list
 
 
-def is_staff(interaction, extra_ok=False):
-    """The extra staff role only passes where a command asks for extra_ok."""
+def is_staff(interaction):
     user = interaction.user
     if user.guild_permissions.manage_guild:
         return True
     row = db.get_guild(bot.db, interaction.guild_id)
-    roles = ("officer_role_id", "extra_staff_role_id") if extra_ok else ("officer_role_id",)
-    return bool(row and any(row[k] and user.get_role(row[k]) for k in roles))
+    return bool(row and any(row[k] and user.get_role(row[k]) for k in ("officer_role_id", "extra_staff_role_id")))
 
 
-async def require_staff(interaction, extra_ok=False):
-    if is_staff(interaction, extra_ok):
+async def require_staff(interaction):
+    if is_staff(interaction):
         return True
     await interaction.response.send_message("Staff only.", ephemeral=True)
     return False
@@ -953,7 +951,7 @@ async def setup(interaction: discord.Interaction, panel_channel: discord.TextCha
     await refresh_board(interaction.guild)
 
 
-@bot.tree.command(description="Staff: let a second role use start, stop, /history, /dashboard and /export. Empty removes it.")
+@bot.tree.command(description="Staff: give a second role every officer permission. Empty removes it.")
 @app_commands.guild_only()
 @app_commands.default_permissions(manage_guild=True)
 @app_commands.checks.has_permissions(manage_guild=True)
@@ -962,8 +960,8 @@ async def extra_staff_role(interaction: discord.Interaction, role: discord.Role 
         return await interaction.response.send_message("Run /setup first.", ephemeral=True)
     db.save_guild(bot.db, interaction.guild_id, extra_staff_role_id=role and role.id)
     if role:
-        await interaction.response.send_message(f"{role.mention} can now use the start and stop commands, /history, /dashboard and /export.", ephemeral=True)
-        return await audit(interaction, f"gave the start, stop, history, dashboard and export commands to {role.mention}.")
+        await interaction.response.send_message(f"{role.mention} now has every officer permission.", ephemeral=True)
+        return await audit(interaction, f"gave the officer permissions to {role.mention}.")
     await interaction.response.send_message("The extra staff role is removed.", ephemeral=True)
     await audit(interaction, "removed the extra staff role.")
 
@@ -1292,7 +1290,7 @@ async def link_member(interaction: discord.Interaction, member: discord.Member, 
 @app_commands.guild_only()
 @app_commands.describe(date="Day as YYYY-MM-DD. Default: today (UTC).")
 async def history(interaction: discord.Interaction, date: str | None = None):
-    if not await require_staff(interaction, True):
+    if not await require_staff(interaction):
         return
     try:
         day = datetime.strptime(date, "%Y-%m-%d").date().isoformat() if date else db.today_utc()
@@ -1468,7 +1466,7 @@ async def backup_db(interaction: discord.Interaction):
 @bot.tree.command(description="Staff: download all donations as a CSV file.")
 @app_commands.guild_only()
 async def export(interaction: discord.Interaction):
-    if not await require_staff(interaction, True):
+    if not await require_staff(interaction):
         return
     data = db.export_csv(bot.db, interaction.guild_id).encode("utf-8-sig")  # BOM: Excel reads UTF-8
     await interaction.response.send_message(
@@ -1480,7 +1478,7 @@ boss_group = app_commands.Group(name="boss", description="Guild boss time polls.
 
 @boss_group.command(name="start", description="Staff: start the boss time polls in a channel.")
 async def boss_start(interaction: discord.Interaction, channel: discord.TextChannel):
-    if not await require_staff(interaction, True):
+    if not await require_staff(interaction):
         return
     if not db.get_guild(bot.db, interaction.guild_id):
         return await interaction.response.send_message("Run /setup first.", ephemeral=True)
@@ -1498,7 +1496,7 @@ async def boss_start(interaction: discord.Interaction, channel: discord.TextChan
 
 @boss_group.command(name="stop", description="Staff: stop the boss time polls.")
 async def boss_stop(interaction: discord.Interaction):
-    if not await require_staff(interaction, True):
+    if not await require_staff(interaction):
         return
     db.save_guild(bot.db, interaction.guild_id, boss_channel_id=None)
     await interaction.response.send_message("Boss polls stopped.", ephemeral=True)
@@ -1511,7 +1509,7 @@ data_group = app_commands.Group(name="data", description="The data channel.", gu
 
 @data_group.command(name="start", description="Staff: show donation data in a channel.")
 async def data_start(interaction: discord.Interaction, channel: discord.TextChannel):
-    if not await require_staff(interaction, True):
+    if not await require_staff(interaction):
         return
     if not db.get_guild(bot.db, interaction.guild_id):
         return await interaction.response.send_message("Run /setup first.", ephemeral=True)
@@ -1527,7 +1525,7 @@ async def data_start(interaction: discord.Interaction, channel: discord.TextChan
 
 @data_group.command(name="stop", description="Staff: stop updating the data channel.")
 async def data_stop(interaction: discord.Interaction):
-    if not await require_staff(interaction, True):
+    if not await require_staff(interaction):
         return
     db.save_guild(bot.db, interaction.guild_id, data_channel_id=None)
     await interaction.response.send_message("Data channel stopped. Its messages stay as they are.",
@@ -1541,7 +1539,7 @@ attend_group = app_commands.Group(name="attendance", description="Guild boss att
 
 @attend_group.command(name="start", description="Staff: post the boss attendance board in a channel.")
 async def attendance_start(interaction: discord.Interaction, channel: discord.TextChannel):
-    if not await require_staff(interaction, True):
+    if not await require_staff(interaction):
         return
     old = db.get_guild(bot.db, interaction.guild_id)
     if not old:
@@ -1566,7 +1564,7 @@ async def attendance_start(interaction: discord.Interaction, channel: discord.Te
 
 @attend_group.command(name="stop", description="Staff: stop the boss attendance board.")
 async def attendance_stop(interaction: discord.Interaction):
-    if not await require_staff(interaction, True):
+    if not await require_staff(interaction):
         return
     db.save_guild(bot.db, interaction.guild_id, attend_channel_id=None)
     await interaction.response.send_message("Attendance board stopped. Its messages stay as they are.",
@@ -1581,7 +1579,7 @@ attend_data_group = app_commands.Group(name="attendance_data", description="The 
 
 @attend_data_group.command(name="start", description="Staff: show boss attendance data in a channel.")
 async def attendance_data_start(interaction: discord.Interaction, channel: discord.TextChannel):
-    if not await require_staff(interaction, True):
+    if not await require_staff(interaction):
         return
     if not db.get_guild(bot.db, interaction.guild_id):
         return await interaction.response.send_message("Run /setup first.", ephemeral=True)
@@ -1597,7 +1595,7 @@ async def attendance_data_start(interaction: discord.Interaction, channel: disco
 
 @attend_data_group.command(name="stop", description="Staff: stop updating the attendance data channel.")
 async def attendance_data_stop(interaction: discord.Interaction):
-    if not await require_staff(interaction, True):
+    if not await require_staff(interaction):
         return
     db.save_guild(bot.db, interaction.guild_id, attend_data_channel_id=None)
     await interaction.response.send_message("Attendance data stopped. Its messages stay as they are.",
@@ -1612,7 +1610,7 @@ staff_group = app_commands.Group(name="staff_channel", description="The private 
 
 @staff_group.command(name="start", description="Staff: send the audit log, reports and link requests to a channel.")
 async def staff_start(interaction: discord.Interaction, channel: discord.TextChannel):
-    if not await require_staff(interaction, True):
+    if not await require_staff(interaction):
         return
     if not db.get_guild(bot.db, interaction.guild_id):
         return await interaction.response.send_message("Run /setup first.", ephemeral=True)
@@ -1629,7 +1627,7 @@ async def staff_start(interaction: discord.Interaction, channel: discord.TextCha
 
 @staff_group.command(name="stop", description="Staff: stop posting to the staff channel.")
 async def staff_stop(interaction: discord.Interaction):
-    if not await require_staff(interaction, True):
+    if not await require_staff(interaction):
         return
     db.save_guild(bot.db, interaction.guild_id, staff_channel_id=None)
     await interaction.response.send_message("Staff channel stopped.", ephemeral=True)
@@ -1644,7 +1642,7 @@ welcome_group = app_commands.Group(name="welcome", description="Greet new people
 @welcome_group.command(name="start", description="Staff: ping each new person in a channel, asking for gear, "
                                                  "playtime and level screenshots.")
 async def welcome_start(interaction: discord.Interaction, channel: discord.TextChannel):
-    if not await require_staff(interaction, True):
+    if not await require_staff(interaction):
         return
     if not db.get_guild(bot.db, interaction.guild_id):
         return await interaction.response.send_message("Run /setup first.", ephemeral=True)
@@ -1661,7 +1659,7 @@ async def welcome_start(interaction: discord.Interaction, channel: discord.TextC
 
 @welcome_group.command(name="stop", description="Staff: stop greeting new people.")
 async def welcome_stop(interaction: discord.Interaction):
-    if not await require_staff(interaction, True):
+    if not await require_staff(interaction):
         return
     db.save_guild(bot.db, interaction.guild_id, welcome_channel_id=None)
     await interaction.response.send_message("Welcome messages stopped.", ephemeral=True)
@@ -2713,7 +2711,7 @@ class DashboardView(discord.ui.View):
 @bot.tree.command(description="Staff: today's numbers at a glance, with shortcut buttons.")
 @app_commands.guild_only()
 async def dashboard(interaction: discord.Interaction):
-    if not await require_staff(interaction, True):
+    if not await require_staff(interaction):
         return
     row = db.get_guild(bot.db, interaction.guild_id)
     if not row:
