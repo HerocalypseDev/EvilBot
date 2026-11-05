@@ -203,7 +203,7 @@ def connect(path):
                          ("xp_message_id", "INTEGER"), ("xp_review_channel_id", "INTEGER"),
                          ("loa_channel_id", "INTEGER"), ("loa_review_channel_id", "INTEGER"),
                          ("loa_role_id", "INTEGER"), ("loa_message_id", "INTEGER"),
-                         ("strike_channel_id", "INTEGER")):  # columns added after the first release
+                         ("strike_channel_id", "INTEGER"), ("extra_staff_role_id", "INTEGER")):  # columns added after the first release
         if column not in have:
             conn.execute(f"ALTER TABLE guilds ADD COLUMN {column} {kind}")
     return conn
@@ -216,7 +216,8 @@ GUILD_FIELDS = {"panel_channel_id", "status_message_id", "officer_role_id",
                 "data_channel_id", "data_message_ids", "attend_channel_id",
                 "attend_message_id", "attend_data_channel_id", "attend_data_message_ids", "staff_channel_id",
                 "welcome_channel_id", "xp_channel_id", "xp_message_id", "xp_review_channel_id",
-                "loa_channel_id", "loa_review_channel_id", "loa_role_id", "loa_message_id", "strike_channel_id"}
+                "loa_channel_id", "loa_review_channel_id", "loa_role_id", "loa_message_id", "strike_channel_id",
+                "extra_staff_role_id"}
                 
 
 
