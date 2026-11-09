@@ -688,8 +688,11 @@ async def post_boss_poll(guild, channel, role_id, cycle_start):
     message = await channel.send(boss.poll_text(f"<@&{role_id}>", cycle_start), view=BossPollView())
     warn_if_role_not_pinged(message, role_id)
     db.add_boss_poll(bot.db, guild.id, cycle_start.isoformat(), message.id)
-    for emoji in boss.EMOJIS:
-        await message.add_reaction(emoji)
+    try:
+        for emoji in boss.EMOJIS:
+            await message.add_reaction(emoji)
+    except discord.HTTPException as e:  # poll is saved: members can still add the numbers themselves
+        log.warning("Could not add reactions to boss poll in guild %s: %s", guild.id, e)
     log.info("Boss poll posted for %s in guild %s", cycle_start.isoformat(), guild.id)
 
 
@@ -1081,7 +1084,10 @@ async def linked(interaction: discord.Interaction):
     messages = board.pack_lines([f"**Linked members ({len(lines)})**\n", *lines])
     await interaction.response.send_message(messages[0], allowed_mentions=none)
     for text in messages[1:]:  # plain channel messages: a followup would show as a reply to the first
-        await interaction.channel.send(text, allowed_mentions=none)
+        try:
+            await interaction.channel.send(text, allowed_mentions=none)
+        except discord.Forbidden:  # bot cannot see this channel: only the interaction webhook works here
+            await interaction.followup.send(text, allowed_mentions=none)
 
 
 @bot.tree.command(description="Your donation card: today, streak, this month and your rank.")
