@@ -1326,18 +1326,20 @@ async def history(interaction: discord.Interaction, date: str | None = None):
 
 @bot.tree.command(description="Staff: show which guild members sent a message in a channel since a day (UTC).")
 @app_commands.guild_only()
-@app_commands.describe(date="Start day as YYYY-MM-DD (from 00:00 UTC)", channel="The channel to check")
+@app_commands.describe(date="Start day as YYYY-MM-DD (UTC)", channel="The channel to check",
+                       time="Start time as HH:MM, 24-hour UTC, e.g. 18:30. Default: 00:00")
 async def activity(interaction: discord.Interaction, date: str,
-                   channel: discord.TextChannel | discord.Thread | discord.VoiceChannel):
+                   channel: discord.TextChannel | discord.Thread | discord.VoiceChannel, time: str | None = None):
     if not await require_staff(interaction):
         return
-    try:
-        start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-    except ValueError:
-        return await interaction.response.send_message("Use the date as YYYY-MM-DD, e.g. 2026-10-21.",
-                                                       ephemeral=True)
+    start = board.activity_start(date, time)
+    if not start:
+        return await interaction.response.send_message(
+            "Use the date as YYYY-MM-DD and the time as HH:MM (24-hour UTC), e.g. 2026-10-21 and 18:30.",
+            ephemeral=True)
     if start > datetime.now(timezone.utc):
-        return await interaction.response.send_message("That day has not started yet.", ephemeral=True)
+        return await interaction.response.send_message(f"<t:{int(start.timestamp())}:f> has not come yet.",
+                                                       ephemeral=True)
     row = db.get_guild(bot.db, interaction.guild_id)
     if not row:
         return await interaction.response.send_message("Run /setup first.", ephemeral=True)
@@ -1359,7 +1361,7 @@ async def activity(interaction: discord.Interaction, date: str,
         return await interaction.followup.send(
             f"I need View Channel and Read Message History in {channel.mention}.", ephemeral=True)
     sent, silent = board.activity_lists(tracked, last_sent)
-    view = ActivityView((f"#{channel.name} since {start:%Y-%m-%d} (UTC)", "Sent", "Not sent", "No message"),
+    view = ActivityView((f"#{channel.name} since {start:%Y-%m-%d %H:%M} (UTC)", "Sent", "Not sent", "No message"),
                         sent, silent)
     await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
 

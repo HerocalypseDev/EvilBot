@@ -343,6 +343,14 @@ def data_sections(conn, guild_id, tracked, today):
     }
 
 
+def activity_start(day, time=None):
+    """UTC start for /activity from 'YYYY-MM-DD' and an optional 'HH:MM' (default 00:00). None if either is malformed."""
+    try:
+        return datetime.strptime(f"{day} {time or '00:00'}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
 def activity_lists(tracked, last_sent):
     """For /activity. tracked = [(discord id, name)], last_sent = {discord id: unix time of their newest message}.
     Returns (sent as (name, unix time), newest first; not sent as names, A-Z)."""

@@ -1,7 +1,7 @@
 from datetime import date, datetime, timedelta, timezone
 
 import db
-from board import (activity_lists, boss_streak, log_all_plan, attend_board_data, bar, dashboard_stats, best_streak, member_card, streak, top_streaks, attend_data_sections, attend_report, board_data, boss_lists, member_day,
+from board import (activity_lists, activity_start, boss_streak, log_all_plan, attend_board_data, bar, dashboard_stats, best_streak, member_card, streak, top_streaks, attend_data_sections, attend_report, board_data, boss_lists, member_day,
                    data_sections, day_lists, join_capped, link_lines, log_all, member_ids, missed_in_row, next_reset_ts, next_week_ts, not_donated,
                    monthly_csv, monthly_report, pack_lines, paginate, short, weekly_leaderboard, xp_cap_counts, xp_day, xp_week_totals)
 
@@ -123,6 +123,14 @@ def test_activity_lists_splits_by_last_message():
     sent, silent = activity_lists(tracked, {1: 100, 3: 300, 9: 50})
     assert sent == [("cy", 300), ("bob", 100)]
     assert silent == ["Ann", "Dee"]
+
+
+def test_activity_start_reads_optional_time():
+    assert activity_start("2026-11-20") == datetime(2026, 11, 20, tzinfo=timezone.utc)
+    assert activity_start("2026-11-20", "18:30") == datetime(2026, 11, 20, 18, 30, tzinfo=timezone.utc)
+    assert activity_start("2026-11-20", "25:00") is None
+    assert activity_start("2026-11-20", "6pm") is None
+    assert activity_start("20-11-2026") is None
 
 
 def test_attend_board_data():
