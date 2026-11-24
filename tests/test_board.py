@@ -1,7 +1,7 @@
 from datetime import date, datetime, timedelta, timezone
 
 import db
-from board import (boss_streak, log_all_plan, attend_board_data, bar, dashboard_stats, best_streak, member_card, streak, top_streaks, attend_data_sections, attend_report, board_data, boss_lists, member_day,
+from board import (activity_lists, boss_streak, log_all_plan, attend_board_data, bar, dashboard_stats, best_streak, member_card, streak, top_streaks, attend_data_sections, attend_report, board_data, boss_lists, member_day,
                    data_sections, day_lists, join_capped, link_lines, log_all, member_ids, missed_in_row, next_reset_ts, next_week_ts, not_donated,
                    monthly_csv, monthly_report, pack_lines, paginate, short, weekly_leaderboard, xp_cap_counts, xp_day, xp_week_totals)
 
@@ -116,6 +116,13 @@ def test_day_lists_splits_one_past_day():
     donated, waiting, on_loa = day_lists(conn, G, [(1, "A"), (2, "B"), (3, "C")], DAY)
     assert [(name, ign) for name, ign, _ in donated] == [("B", "Beta")]
     assert waiting == ["Alpha", "C (not linked)"] and on_loa == []
+
+
+def test_activity_lists_splits_by_last_message():
+    tracked = [(1, "bob"), (2, "Ann"), (3, "cy"), (4, "Dee")]
+    sent, silent = activity_lists(tracked, {1: 100, 3: 300, 9: 50})
+    assert sent == [("cy", 300), ("bob", 100)]
+    assert silent == ["Ann", "Dee"]
 
 
 def test_attend_board_data():

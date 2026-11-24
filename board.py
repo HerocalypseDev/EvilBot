@@ -343,6 +343,13 @@ def data_sections(conn, guild_id, tracked, today):
     }
 
 
+def activity_lists(tracked, last_sent):
+    """For /activity. tracked = [(discord id, name)], last_sent = {discord id: unix time of their newest message}.
+    Returns (sent as (name, unix time), newest first; not sent as names, A-Z)."""
+    sent = sorted(((name, last_sent[i]) for i, name in tracked if i in last_sent), key=lambda row: -row[1])
+    return sent, sorted((name for i, name in tracked if i not in last_sent), key=str.lower)
+
+
 def day_lists(conn, guild_id, tracked, day):
     """For /history. Returns (donated as (discord name, in-game name, unix time), not donated as board names,
     on LOA as (in-game name, last LOA day))."""

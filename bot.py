@@ -512,6 +512,17 @@ class HistoryView(discord.ui.View):
         await self._show(interaction)
 
 
+class ActivityView(HistoryView):
+    """/activity: members who sent a message in a channel (with their newest one), then those who did not."""
+
+    def __init__(self, labels, sent, silent):
+        super().__init__(labels, (), ())
+        self.rows = ([("donated", f"{board.short(n, 24)} · <t:{t}:R>") for n, t in sent]
+                     + [("waiting", discord.utils.escape_markdown(n)) for n in silent])
+        self.counts = (len(sent), len(silent), 0)
+        self._update_buttons()
+
+
 class Bot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix=commands.when_mentioned, intents=intents)
@@ -1311,6 +1322,46 @@ async def history(interaction: discord.Interaction, date: str | None = None):
     view = HistoryView((f"Donations {day} (UTC)", "Donated", "Not donated", "Not donated yet"), donated, waiting,
                        on_loa)
     await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+
+
+@bot.tree.command(description="Staff: show which guild members sent a message in a channel since a day (UTC).")
+@app_commands.guild_only()
+@app_commands.describe(date="Start day as YYYY-MM-DD (from 00:00 UTC)", channel="The channel to check")
+async def activity(interaction: discord.Interaction, date: str,
+                   channel: discord.TextChannel | discord.Thread | discord.VoiceChannel):
+    if not await require_staff(interaction):
+        return
+    try:
+        start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return await interaction.response.send_message("Use the date as YYYY-MM-DD, e.g. 2026-10-21.",
+                                                       ephemeral=True)
+    if start > datetime.now(timezone.utc):
+        return await interaction.response.send_message("That day has not started yet.", ephemeral=True)
+    row = db.get_guild(bot.db, interaction.guild_id)
+    if not row:
+        return await interaction.response.send_message("Run /setup first.", ephemeral=True)
+    perms = channel.permissions_for(interaction.guild.me)
+    if not (perms.view_channel and perms.read_message_history):
+        return await interaction.response.send_message(
+            f"I need View Channel and Read Message History in {channel.mention}.", ephemeral=True)
+    tracked = tracked_members(interaction.guild, row["member_role_id"])
+    wanted = {i for i, _ in tracked}
+    await interaction.response.defer(ephemeral=True)
+    last_sent = {}
+    try:
+        async for message in channel.history(limit=None, after=start, oldest_first=False):
+            if message.author.id in wanted and message.author.id not in last_sent:
+                last_sent[message.author.id] = int(message.created_at.timestamp())
+                if len(last_sent) == len(wanted):
+                    break
+    except discord.Forbidden:
+        return await interaction.followup.send(
+            f"I need View Channel and Read Message History in {channel.mention}.", ephemeral=True)
+    sent, silent = board.activity_lists(tracked, last_sent)
+    view = ActivityView((f"#{channel.name} since {start:%Y-%m-%d} (UTC)", "Sent", "Not sent", "No message"),
+                        sent, silent)
+    await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
 
 
 @bot.tree.command(name="log", description="Staff: log a donation for a member.")
