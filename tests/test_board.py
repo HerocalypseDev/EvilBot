@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta, timezone
 import db
 from board import (activity_lists, activity_start, boss_streak, log_all_plan, attend_board_data, bar, dashboard_stats, best_streak, member_card, streak, top_streaks, attend_data_sections, attend_report, board_data, boss_lists, member_day,
                    data_sections, day_lists, join_capped, link_lines, log_all, member_ids, missed_in_row, next_reset_ts, next_week_ts, not_donated,
-                   monthly_csv, monthly_report, pack_lines, paginate, short, weekly_leaderboard, xp_cap_counts, xp_day, xp_week_totals)
+                   monthly_csv, monthly_report, pack_lines, parse_raids, raid_role_for, raid_roles, raids_line, raids_ranked, top_raiders, paginate, short, weekly_leaderboard, xp_cap_counts, xp_day, xp_week_totals)
 
 G, DAY, YDAY = 1, "2026-10-22", "2026-10-21"
 
@@ -409,3 +409,29 @@ def test_streak_gap():
     assert streak_gap(set(), "2026-11-26") == []
     gap = streak_gap(days, "2026-11-26")
     assert streak(days | set(gap), "2026-11-26") == 6
+
+
+def test_raids():
+    ids = {"vedia": 1, "bob": 2, "a:b": 3}
+    counts, bad = parse_raids("Vedia: 120\n\n bob :95\nA:B: 7\nNobody: 4\nBob: x\nBob 9", ids)
+    assert counts == {1: 120, 2: 95, 3: 7}
+    assert bad == ["Nobody: 4", "Bob: x", "Bob 9"]
+    assert raids_ranked([("b", 5), ("A", 9), ("c", 5), ("d", 0)]) == [
+        (1, "A", 9), (2, "b", 5), (2, "c", 5), (4, "d", 0)]
+    assert raids_line(1, "Vedia", 120, 120).endswith("█" * 8)
+    assert raids_line(4, "Dan", 0, 0).endswith("░" * 8)
+
+
+
+def test_raid_roles():
+    from types import SimpleNamespace as R
+    tiers = raid_roles([R(name="1000 Raid completions"), R(name="2000 raid Completions "), R(name="Officer"),
+                        R(name="1500 Raid completions x")])
+    assert [t for t, _ in tiers] == [1000, 2000]
+    assert raid_role_for(tiers, 999) is None
+    assert raid_role_for(tiers, 1000).name == "1000 Raid completions"
+    assert raid_role_for(tiers, 2500).name.startswith("2000")
+
+    assert top_raiders({1: 50, 2: 40, 3: 40, 4: 10, 5: 0}) == ({1}, {2, 3})
+    assert top_raiders({1: 50, 2: 50, 3: 40, 4: 30}) == ({1, 2}, {3})
+    assert top_raiders({1: 0}) == (set(), set())

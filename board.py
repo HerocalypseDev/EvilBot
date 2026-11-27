@@ -520,3 +520,57 @@ def xp_cap_counts(conn, guild_id, tracked, today):
     days = [start + timedelta(days=k) for k in range((date.fromisoformat(today) - start).days + 1)]
     return [(d, sum(g is not None and g >= XP_CAP for *_, g in xp_day(conn, guild_id, tracked, d.isoformat())))
             for d in days]
+
+
+# --- raids leaderboard ---
+
+MEDALS = ("🥇", "🥈", "🥉")
+
+
+def parse_raids(text, ids):
+    """Lines 'In-game name: count' from the raids form. ids = {ign lowercased: discord_id}.
+    Returns ({discord_id: count}, lines that could not be read)."""
+    counts, bad = {}, []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        name, sep, n = line.rpartition(":")
+        i = ids.get(name.strip().lower())
+        if not sep or i is None or not re.fullmatch(r"\d{1,6}", n.strip()):
+            bad.append(line.strip())
+            continue
+        counts[i] = int(n)
+    return counts, bad
+
+
+def raids_ranked(rows):
+    """rows = [(ign, count)]. Returns [(rank, ign, count)], highest first. Equal counts share a rank."""
+    rows = sorted(rows, key=lambda r: (-r[1], r[0].lower()))
+    return [(1 + sum(c > n for _, c in rows), ign, n) for ign, n in rows]
+
+
+def raids_line(rank, ign, count, top):
+    """One code-block row: rank, name, count and a bar scaled to the top count."""
+    name = ign.replace("`", "'")
+    name = name if len(name) <= 12 else name[:11] + "…"
+    return f"{rank:>3}. {name:<12} {count:>5,} {bar(count, top, 8)}"
+
+
+RAID_ROLE = re.compile(r"(\d+) raid completions", re.IGNORECASE)
+
+
+def raid_roles(roles):
+    """[(threshold, role)] for roles named like '1000 Raid completions'. roles = objects with .name."""
+    return [(int(m[1]), r) for r in roles if (m := RAID_ROLE.fullmatch(r.name.strip()))]
+
+
+def raid_role_for(tiers, count):
+    """The role of the highest threshold the count has reached, or None. tiers = raid_roles(...)."""
+    reached = [t for t in tiers if count >= t[0]]
+    return max(reached, key=lambda t: t[0])[1] if reached else None
+
+
+def top_raiders(counts):
+    """counts = {discord_id: raids}. Returns (rank 1 ids, rank 2-3 ids). Equal counts share a rank; 0 never ranks."""
+    rank = {i: 1 + sum(c > n for c in counts.values()) for i, n in counts.items() if n}
+    return {i for i, r in rank.items() if r == 1}, {i for i, r in rank.items() if 1 < r <= 3}

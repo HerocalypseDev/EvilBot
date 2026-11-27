@@ -130,6 +130,14 @@ CREATE TABLE IF NOT EXISTS loa (
     started_at  TEXT,
     notified_at TEXT
 );
+CREATE TABLE IF NOT EXISTS raids (
+    guild_id   INTEGER NOT NULL,
+    discord_id INTEGER NOT NULL,
+    count      INTEGER NOT NULL,
+    logged_by  INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (guild_id, discord_id)
+);
 """
 
 
@@ -203,7 +211,8 @@ def connect(path):
                          ("xp_message_id", "INTEGER"), ("xp_review_channel_id", "INTEGER"),
                          ("loa_channel_id", "INTEGER"), ("loa_review_channel_id", "INTEGER"),
                          ("loa_role_id", "INTEGER"), ("loa_message_id", "INTEGER"),
-                         ("strike_channel_id", "INTEGER"), ("extra_staff_role_id", "INTEGER")):  # columns added after the first release
+                         ("strike_channel_id", "INTEGER"), ("extra_staff_role_id", "INTEGER"),
+                         ("raids_channel_id", "INTEGER"), ("raids_message_id", "INTEGER")):  # columns added after the first release
         if column not in have:
             conn.execute(f"ALTER TABLE guilds ADD COLUMN {column} {kind}")
     return conn
@@ -217,7 +226,7 @@ GUILD_FIELDS = {"panel_channel_id", "status_message_id", "officer_role_id",
                 "attend_message_id", "attend_data_channel_id", "attend_data_message_ids", "staff_channel_id",
                 "welcome_channel_id", "xp_channel_id", "xp_message_id", "xp_review_channel_id",
                 "loa_channel_id", "loa_review_channel_id", "loa_role_id", "loa_message_id", "strike_channel_id",
-                "extra_staff_role_id"}
+                "extra_staff_role_id", "raids_channel_id", "raids_message_id"}
                 
 
 
@@ -887,3 +896,20 @@ def remove_strike(conn, guild_id, strike_id):
             "DELETE FROM strikes WHERE id = ? AND guild_id = ?",
             (strike_id, guild_id)
         ).rowcount == 1
+
+
+# --- raids: each member's total completed raids, as shown in the game. A new log replaces the old count ---
+
+def raids_set(conn, guild_id, counts, logged_by):
+    """counts = {discord_id: total raids}."""
+    with conn:
+        conn.executemany(
+            "INSERT INTO raids (guild_id, discord_id, count, logged_by, updated_at) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT (guild_id, discord_id) DO UPDATE SET count = excluded.count, "
+            "logged_by = excluded.logged_by, updated_at = excluded.updated_at",
+            [(guild_id, i, n, logged_by, now_iso()) for i, n in counts.items()])
+
+
+def raids_counts(conn, guild_id):
+    return {r["discord_id"]: r["count"] for r in
+            conn.execute("SELECT discord_id, count FROM raids WHERE guild_id = ?", (guild_id,))}

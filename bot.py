@@ -537,6 +537,7 @@ class Bot(commands.Bot):
         self.add_view(XpRequestView())
         self.add_view(LoaPanelView())
         self.add_view(LoaRequestView())
+        self.add_view(RaidsView())
         for key in [*DATA_SECTIONS, *ATTEND_SECTIONS]:
             self.add_view(DataView(key))
         await self.tree.sync()
@@ -581,7 +582,7 @@ async def post_offline_notice():
     Data channels are left alone. Runs on /stop and Ctrl+C."""
     notice = discord.Embed(
         title="Evil Donations — offline",
-        description="Bot offline. Do not log donations, attendance, LOA or XP. Contact an officer.",
+        description="Bot offline. Do not log donations, attendance, LOA, XP or raids. Contact an officer.",
         colour=discord.Colour.dark_grey(),
         timestamp=datetime.now(timezone.utc)
     )
@@ -597,6 +598,7 @@ async def post_offline_notice():
             (row["attend_channel_id"], row["attend_message_id"]),         # Attendance board
             (row["loa_channel_id"], row["loa_message_id"]),               # LOA board
             (row["xp_channel_id"], row["xp_message_id"]),                 # XP board
+            (row["raids_channel_id"], row["raids_message_id"]),           # Raids board
         ]
 
         for channel_id, message_id in boards:
@@ -877,6 +879,9 @@ async def tick():
                 await refresh_xp_panel(guild)
             if row["xp_channel_id"]:
                 await post_xp_ping(guild, row, now)
+            if row["raids_channel_id"] and guild.id not in _raids_shown:  # just started: replace the offline notice
+                _raids_shown.add(guild.id)
+                await refresh_raids_board(guild)
             await post_weekly_leaderboard(guild, row, now)
             await post_monthly(guild, row, now)
             if row["board_day"] != today:
@@ -2757,6 +2762,210 @@ async def xp_member(interaction: discord.Interaction, member: discord.Member, da
                  else "not logged") for d in week]
     await interaction.response.send_message("\n".join(lines), ephemeral=True,
                                             allowed_mentions=discord.AllowedMentions.none())
+
+
+# --- raids leaderboard: officers log each member's total completed raids, as shown in the game ---
+
+_raids_lock = asyncio.Lock()
+_raids_shown = set()  # guilds whose raids board was redrawn since start: until then it shows the offline notice
+RAIDS_ROWS = 120  # ponytail: one embed holds about 6000 characters, split into pages if the guild grows past this
+
+
+def raids_rows(guild, row):
+    """[(discord_id, ign, count)] for every linked member with the member role. Never logged = 0."""
+    igns, counts = db.get_igns(bot.db, guild.id), db.raids_counts(bot.db, guild.id)
+    return [(i, igns[i], counts.get(i, 0)) for i, _ in tracked_members(guild, row["member_role_id"]) if i in igns]
+
+
+def raids_embed(guild, rows):
+    ranked = board.raids_ranked([(ign, n) for _, ign, n in rows])
+    total, top = sum(n for *_, n in ranked), ranked[0][2] if ranked else 0
+    podium = [f"{board.MEDALS[r - 1]} **{discord.utils.escape_markdown(ign)}** · **{n:,}** raids"
+              for r, ign, n in ranked if r <= 3 and n]
+    embed = discord.Embed(title="⚔️ Raids Completed · Hall of Fame",
+                          description="\n".join(podium) or "No raids logged yet.")
+    embed.add_field(name="Guild total", value=f"**{total:,}** raids")
+    embed.add_field(name="Raiders", value=f"**{sum(n > 0 for *_, n in ranked)}** of {len(ranked)}")
+    embed.add_field(name="Average", value=f"**{round(total / len(ranked)):,}**" if ranked else "**0**")
+    lines = [board.raids_line(r, ign, n, top) for r, ign, n in ranked[:RAIDS_ROWS]]
+    if len(ranked) > RAIDS_ROWS:
+        lines.append(f"+{len(ranked) - RAIDS_ROWS} more")
+    for k, chunk in enumerate(board.pack_lines(lines, 1000) if lines else []):
+        embed.add_field(name="Leaderboard" if k == 0 else "\u200b", value=f"```\n{chunk}\n```", inline=False)
+    return brand(embed, guild, "Officers log raid totals from the game")
+
+
+async def refresh_raids_board(guild):
+    """Update the raids board. If something was posted below it, move it to the bottom of the channel."""
+    async with _raids_lock:
+        row = db.get_guild(bot.db, guild.id)
+        channel = row and row["raids_channel_id"] and guild.get_channel(row["raids_channel_id"])
+        if not channel:
+            return
+        embed = raids_embed(guild, raids_rows(guild, row))
+        old = row["raids_message_id"] and channel.get_partial_message(row["raids_message_id"])
+        try:
+            if old and channel.last_message_id == old.id:
+                return await old.edit(embed=embed, view=RaidsView())
+            if old:
+                try:
+                    await old.delete()
+                except discord.NotFound:
+                    pass
+            new = await channel.send(embed=embed, view=RaidsView())
+            db.save_guild(bot.db, guild.id, raids_message_id=new.id)
+        except discord.HTTPException as e:
+            log.warning("Raids board refresh failed in guild %s: %s", guild.id, e)
+
+
+def role_named(guild, name):
+    return next((r for r in guild.roles if r.name.strip().lower() == name.lower()), None)
+
+
+async def sync_raid_roles(guild, changed):
+    """Give each changed member only the highest 'N Raid completions' role reached, and move the Top 1 / Top 3
+    raid completions roles to the current ranks. Members never logged keep any role staff gave by hand.
+    changed = discord ids whose count changed. Returns the number of role changes that failed."""
+    row = db.get_guild(bot.db, guild.id)
+    counts = {i: n for i, _, n in raids_rows(guild, row)}
+    tiers, failed = board.raid_roles(guild.roles), 0
+    plan = []  # (member, roles to add, roles to remove)
+    for i in changed:
+        member = guild.get_member(i)
+        if member and i in counts:
+            target = board.raid_role_for(tiers, counts[i])
+            plan.append((member, [target] if target and target not in member.roles else [],
+                         [r for _, r in tiers if r != target and r in member.roles]))
+    for role, want in zip((role_named(guild, "Top 1 raid completions"), role_named(guild, "Top 3 raid completions")),
+                          board.top_raiders(counts)):
+        if not role:
+            continue
+        plan += [(m, [], [role]) for m in role.members if m.id not in want]
+        plan += [(m, [role], []) for m in map(guild.get_member, want) if m and role not in m.roles]
+    for member, add, remove in plan:
+        try:
+            if add:
+                await member.add_roles(*add, reason="Raids completed leaderboard")
+            if remove:
+                await member.remove_roles(*remove, reason="Raids completed leaderboard")
+        except discord.HTTPException as e:
+            failed += 1
+            log.warning("Raid role change failed for %s in guild %s: %s", member.id, guild.id, e)
+    return failed
+
+
+async def after_raids_change(interaction, changed):
+    """Roles, then the board. Tells the officer if the bot could not change some roles."""
+    failed = await sync_raid_roles(interaction.guild, changed)
+    if failed:
+        await interaction.followup.send(
+            f"Could not change raid roles for {failed} member(s). Give the bot Manage Roles and put its role above "
+            "the raid roles.", ephemeral=True)
+    await refresh_raids_board(interaction.guild)
+
+
+async def open_raids_form(interaction):
+    if not await require_staff(interaction):
+        return
+    row = db.get_guild(bot.db, interaction.guild_id)
+    if not row:
+        return await interaction.response.send_message("Run /setup first.", ephemeral=True)
+    rows = sorted(raids_rows(interaction.guild, row), key=lambda r: r[1].lower())
+    if not rows:
+        return await interaction.response.send_message("No linked members with the member role yet.", ephemeral=True)
+    text = "\n".join(f"{ign}: {n}" for _, ign, n in rows)
+    if len(text) > 4000:  # Discord's cap for one text box
+        return await interaction.response.send_message(
+            "Too many members for one form. Use /raids_log for each member.", ephemeral=True)
+    await interaction.response.send_modal(RaidsModal(text))
+
+
+class RaidsModal(discord.ui.Modal, title="Raids completed"):
+    def __init__(self, text):
+        super().__init__()
+        self.counts = discord.ui.TextInput(label="Name: total raids, one member per line",
+                                           style=discord.TextStyle.paragraph, default=text, max_length=4000)
+        self.add_item(self.counts)
+
+    async def on_submit(self, interaction):
+        if not await require_staff(interaction):
+            return
+        rows = raids_rows(interaction.guild, db.get_guild(bot.db, interaction.guild_id))
+        names, old = {i: ign for i, ign, _ in rows}, {i: n for i, _, n in rows}
+        counts, bad = board.parse_raids(self.counts.value, {ign.lower(): i for i, ign, _ in rows})
+        changed = {i: n for i, n in counts.items() if n != old[i]}
+        if changed:
+            db.raids_set(bot.db, interaction.guild_id, changed, interaction.user.id)
+        esc = discord.utils.escape_markdown
+        updated = [f"{esc(names[i])} {old[i]:,} → {n:,}" for i, n in changed.items()]
+        lines = [f"Updated {len(changed)} member(s)."]
+        if updated:
+            lines.append(f"Updated: {board.join_capped(updated, 800)}")
+        if bad:
+            lines.append(f"Not read (write 'name: number' with a linked name): "
+                         f"{board.join_capped([esc(b) for b in bad], 800)}")
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+        if changed:
+            await audit(interaction, f"updated raids for {len(changed)} member(s): {board.join_capped(updated, 1500)}.")
+            await after_raids_change(interaction, changed)
+
+
+class RaidsView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Update raids", emoji="⚔️", style=discord.ButtonStyle.blurple, custom_id="raids_update")
+    async def update(self, interaction, button):
+        await open_raids_form(interaction)
+
+
+@bot.tree.command(name="raids_setup", description="Staff: post the raids completed leaderboard in a channel.")
+@app_commands.guild_only()
+@app_commands.describe(channel="Where everyone sees the leaderboard")
+async def raids_setup(interaction: discord.Interaction, channel: discord.TextChannel):
+    if not await require_staff(interaction):
+        return
+    row = db.get_guild(bot.db, interaction.guild_id)
+    if not row:
+        return await interaction.response.send_message("Run /setup first.", ephemeral=True)
+    perms = channel.permissions_for(interaction.guild.me)
+    if not (perms.view_channel and perms.send_messages and perms.embed_links):
+        return await interaction.response.send_message(
+            f"I cannot post in {channel.mention}. Give the bot View Channel, Send Messages and Embed Links "
+            "there, then run /raids_setup again.", ephemeral=True)
+    old = row["raids_channel_id"] and row["raids_message_id"] and interaction.guild.get_channel(row["raids_channel_id"])
+    if old and old.id != channel.id:  # moved: the old board would keep a working button
+        try:
+            await old.get_partial_message(row["raids_message_id"]).delete()
+        except discord.HTTPException:
+            pass
+        db.save_guild(bot.db, interaction.guild_id, raids_message_id=None)
+    db.save_guild(bot.db, interaction.guild_id, raids_channel_id=channel.id)
+    await interaction.response.send_message(f"Raids leaderboard in {channel.mention}.", ephemeral=True)
+    await audit(interaction, f"set the raids leaderboard channel to {channel.mention}.")
+    await refresh_raids_board(interaction.guild)
+
+
+@bot.tree.command(name="raids_log", description="Staff: set a member's total completed raids, as shown in the game.")
+@app_commands.guild_only()
+@app_commands.describe(raids="Total completed raids shown in the game. Replaces the old number.")
+async def raids_log(interaction: discord.Interaction, member: discord.Member, raids: app_commands.Range[int, 0, 999999]):
+    if not await require_staff(interaction):
+        return
+    ign = db.get_ign(bot.db, interaction.guild_id, member.id)
+    if not ign:
+        return await interaction.response.send_message("Member has no linked IGN.", ephemeral=True)
+    db.raids_set(bot.db, interaction.guild_id, {member.id: raids}, interaction.user.id)
+    await interaction.response.send_message(
+        f"Logged **{discord.utils.escape_markdown(ign)}**: {raids:,} raids completed.", ephemeral=True)
+    await audit(interaction, f"set {member.mention}'s raids completed to {raids:,}.")
+    await after_raids_change(interaction, [member.id])
+
+
+@bot.tree.command(name="raids_update", description="Staff: open a form with every member's raids, to update them all.")
+@app_commands.guild_only()
+async def raids_update(interaction: discord.Interaction):
+    await open_raids_form(interaction)
 
 
 def command_lines():
