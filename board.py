@@ -545,12 +545,13 @@ def parse_raids(text, ids):
 
 
 def raids_ranked(rows):
-    """rows = [(ign, count)]. Returns [(rank, ign, count)], highest first. Equal counts share a rank."""
-    rows = sorted(rows, key=lambda r: (-r[1], r[0].lower()))
-    return [(1 + sum(c > n for _, c in rows), ign, n) for ign, n in rows]
+    """rows = [(discord name, ign, count)]. Returns [(rank, discord name, ign, count)], highest first.
+    Equal counts share a rank."""
+    rows = sorted(rows, key=lambda r: (-r[2], r[0].lower()))
+    return [(1 + sum(r[2] > n for r in rows), name, ign, n) for name, ign, n in rows]
 
 
-def pad(name, width=12):
+def pad(name, width=11):
     """Cut or pad a name to `width` screen columns, so the next column lines up in a code block.
     Wide characters (Chinese, Japanese, Korean) take 2 columns; marks that combine with the letter before take 0."""
     def cols(c):
@@ -564,9 +565,9 @@ def pad(name, width=12):
     return out + " " * (width - used)
 
 
-def raids_line(rank, ign, count, top):
-    """One code-block row: rank, name, count and a bar scaled to the top count."""
-    return f"{rank:>3}. {pad(ign)} {count:>5,} {bar(count, top, 8)}"
+def raids_line(rank, name, ign, count):
+    """One code-block row: rank, Discord name, in-game name, count."""
+    return f"{rank:>3}. {pad(name)} {pad(ign)} {count:>5,}"
 
 
 RAID_ROLE = re.compile(r"(\d+) raid completions", re.IGNORECASE)

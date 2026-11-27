@@ -416,10 +416,9 @@ def test_raids():
     counts, bad = parse_raids("Vedia: 120\n\n bob :95\nA:B: 7\nNobody: 4\nBob: x\nBob 9", ids)
     assert counts == {1: 120, 2: 95, 3: 7}
     assert bad == ["Nobody: 4", "Bob: x", "Bob 9"]
-    assert raids_ranked([("b", 5), ("A", 9), ("c", 5), ("d", 0)]) == [
-        (1, "A", 9), (2, "b", 5), (2, "c", 5), (4, "d", 0)]
-    assert raids_line(1, "Vedia", 120, 120).endswith("█" * 8)
-    assert raids_line(4, "Dan", 0, 0).endswith("░" * 8)
+    assert raids_ranked([("b", "x", 5), ("A", "y", 9), ("c", "z", 5), ("d", "w", 0)]) == [
+        (1, "A", "y", 9), (2, "b", "x", 5), (2, "c", "z", 5), (4, "d", "w", 0)]
+    assert raids_line(1, "Ved", "Vedia", 120) == "  1. Ved         Vedia         120"
 
 
 
@@ -436,7 +435,7 @@ def test_raid_roles():
     assert top_raiders({1: 50, 2: 50, 3: 40, 4: 30}) == ({1, 2}, {3})
     assert top_raiders({1: 0}) == (set(), set())
 
-    assert pad("Bob") == "Bob" + " " * 9
-    assert pad("Averyveryverylongname") == "Averyveryve…"
-    assert pad("王者") == "王者" + " " * 8  # 2 columns each
-    assert pad("王者王者王者王者") == "王者王者王…" + " "  # 10 columns + … = 11, one space to 12
+    assert pad("Bob") == "Bob" + " " * 8
+    assert pad("Averyveryverylongname") == "Averyveryv…"
+    assert pad("王者") == "王者" + " " * 7  # 2 columns each
+    assert pad("王者王者王者王者") == "王者王者王…"  # 10 columns + … = 11

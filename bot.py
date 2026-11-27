@@ -2778,18 +2778,21 @@ def raids_rows(guild, row):
 
 
 def raids_embed(guild, rows):
-    ranked = board.raids_ranked([(ign, n) for _, ign, n in rows])
-    total, top = sum(n for *_, n in ranked), ranked[0][2] if ranked else 0
-    podium = [f"{board.MEDALS[r - 1]} {board.pad(ign)} {n:>6,} raids" for r, ign, n in ranked if r <= 3 and n]
+    ranked = board.raids_ranked([((m := guild.get_member(i)) and m.display_name or ign, ign, n) for i, ign, n in rows])
+    total = sum(n for *_, n in ranked)
+    # plain text in code blocks: names never ping
+    podium = [f"{board.MEDALS[r - 1]} {board.pad(name)} {board.pad(ign)} {n:>6,}"
+              for r, name, ign, n in ranked if r <= 3 and n]
     embed = discord.Embed(title="⚔️ Raids Completed · Hall of Fame",
                           description="```\n" + "\n".join(podium) + "\n```" if podium else "No raids logged yet.")
     embed.add_field(name="Guild total", value=f"**{total:,}** raids")
     embed.add_field(name="Raiders", value=f"**{sum(n > 0 for *_, n in ranked)}** of {len(ranked)}")
     embed.add_field(name="Average", value=f"**{round(total / len(ranked)):,}**" if ranked else "**0**")
-    lines = [board.raids_line(r, ign, n, top) for r, ign, n in ranked[:RAIDS_ROWS]]
+    lines = [f"  #  {board.pad('Discord')} {board.pad('In-game')} Raids"]
+    lines += [board.raids_line(*r) for r in ranked[:RAIDS_ROWS]]
     if len(ranked) > RAIDS_ROWS:
         lines.append(f"+{len(ranked) - RAIDS_ROWS} more")
-    for k, chunk in enumerate(board.pack_lines(lines, 1000) if lines else []):
+    for k, chunk in enumerate(board.pack_lines(lines, 1000) if ranked else []):
         embed.add_field(name="Leaderboard" if k == 0 else "\u200b", value=f"```\n{chunk}\n```", inline=False)
     return brand(embed, guild, "Officers log raid totals from the game")
 
