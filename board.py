@@ -98,6 +98,22 @@ def streak(days, today, loa=frozenset()):
     return n
 
 
+def streak_gap(days, today, loa=frozenset(), limit=7):
+    """Missed days (oldest first) between the current run and the logged day before it. Filling them joins the
+    two runs. [] if no earlier logged day or the gap is longer than limit days. LOA days are skipped."""
+    d = date.fromisoformat(today)
+    if today not in days:
+        d -= timedelta(days=1)
+    while d.isoformat() in days or d.isoformat() in loa:
+        d -= timedelta(days=1)
+    first, gap = min(days, default=today), []
+    while d.isoformat() >= first and d.isoformat() not in days:
+        if d.isoformat() not in loa:
+            gap.append(d.isoformat())
+        d -= timedelta(days=1)
+    return gap[::-1] if d.isoformat() >= first and len(gap) <= limit else []
+
+
 def best_streak(days, loa=frozenset()):
     best = run = 0
     prev = None

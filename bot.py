@@ -1392,6 +1392,42 @@ async def log_donation(interaction: discord.Interaction, member: discord.Member,
     await refresh_board(interaction.guild)
 
 
+@bot.tree.command(name="restore_streak", description="Staff: fill the missed days (up to 7) that broke a member's streak.")
+@app_commands.guild_only()
+@app_commands.describe(type="Which streak", member="The member whose streak broke")
+@app_commands.choices(type=[app_commands.Choice(name="donation", value="donation"),
+                            app_commands.Choice(name="xp cap", value="xp")])
+async def restore_streak(interaction: discord.Interaction, type: app_commands.Choice[str], member: discord.Member):
+    if not await require_staff(interaction):
+        return
+    gid = interaction.guild_id
+    ign = db.get_ign(bot.db, gid, member.id)
+    if not ign:
+        return await interaction.response.send_message("Member has no linked IGN.", ephemeral=True)
+    xp = type.value == "xp"
+    days = db.xp_cap_days(bot.db, gid, member.id) if xp else db.donation_days(bot.db, gid).get(member.id, set())
+    gap = board.streak_gap(days, db.today_utc(), db.loa_days(bot.db, gid).get(member.id, set()))
+    if not gap:
+        return await interaction.response.send_message(
+            f"No gap to fill in {member.mention}'s {type.name} streak (nothing missed, or more than 7 days).",
+            ephemeral=True)
+    try:
+        for day in gap:
+            if xp:
+                db.xp_set(bot.db, gid, member.id, day, interaction.user.id, gain=XP_CAP)
+            else:
+                db.record(bot.db, gid, member.id, member.display_name, ign, day, logged_by=interaction.user.id)
+    except db.XpInvalid as e:
+        done = gap[:gap.index(day)]
+        return await interaction.response.send_message(
+            f"{xp_invalid_text(e)} Filled: {', '.join(done) or 'nothing'}.", ephemeral=True)
+    await interaction.response.send_message(
+        f"Restored **{discord.utils.escape_markdown(ign)}**'s {type.name} streak: filled {', '.join(gap)}.",
+        ephemeral=True)
+    await audit(interaction, f"restored {member.mention}'s {type.name} streak: filled {', '.join(gap)}.")
+    await (refresh_xp_panel if xp else refresh_board)(interaction.guild)
+
+
 @bot.tree.command(name="log_many", description="Staff: log a donation for several members at once.")
 @app_commands.guild_only()
 @app_commands.describe(members="@mention every member, e.g. @Ann @Bob @Cid", day="Default: today (UTC)")

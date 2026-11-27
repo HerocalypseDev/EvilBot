@@ -395,3 +395,17 @@ def test_xp_and_monthly_with_loa():
     report = monthly_report(conn, G, tracked, "2026-10", datetime(2026, 11, 1, tzinfo=timezone.utc))
     assert report["loa_days"] == {"Aa": 0, "Bb": 2}  # the 22nd and the 23rd
     assert monthly_csv(report).splitlines()[2].endswith(",2")
+
+
+def test_streak_gap():
+    from board import streak_gap
+    days = {"2026-11-20", "2026-11-21", "2026-11-25"}
+    assert streak_gap(days, "2026-11-27") == ["2026-11-26"]  # today still open, yesterday missed
+    assert streak_gap(days | {"2026-11-27"}, "2026-11-27") == ["2026-11-26"]
+    assert streak_gap(days, "2026-11-26") == ["2026-11-22", "2026-11-23", "2026-11-24"]
+    assert streak_gap(days, "2026-11-26", {"2026-11-23"}) == ["2026-11-22", "2026-11-24"]  # LOA not filled
+    assert streak_gap(days, "2026-11-26", limit=2) == []  # gap too long
+    assert streak_gap({"2026-11-25", "2026-11-26"}, "2026-11-26") == []  # nothing missed, no earlier day
+    assert streak_gap(set(), "2026-11-26") == []
+    gap = streak_gap(days, "2026-11-26")
+    assert streak(days | set(gap), "2026-11-26") == 6
