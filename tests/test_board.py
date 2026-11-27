@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta, timezone
 import db
 from board import (activity_lists, activity_start, boss_streak, log_all_plan, attend_board_data, bar, dashboard_stats, best_streak, member_card, streak, top_streaks, attend_data_sections, attend_report, board_data, boss_lists, member_day,
                    data_sections, day_lists, join_capped, link_lines, log_all, member_ids, missed_in_row, next_reset_ts, next_week_ts, not_donated,
-                   monthly_csv, monthly_report, pack_lines, parse_raids, raid_role_for, raid_roles, raids_line, raids_ranked, top_raiders, paginate, short, weekly_leaderboard, xp_cap_counts, xp_day, xp_week_totals)
+                   monthly_csv, monthly_report, pack_lines, pad, parse_raids, raid_role_for, raid_roles, raids_line, raids_ranked, top_raiders, paginate, short, weekly_leaderboard, xp_cap_counts, xp_day, xp_week_totals)
 
 G, DAY, YDAY = 1, "2026-10-22", "2026-10-21"
 
@@ -435,3 +435,8 @@ def test_raid_roles():
     assert top_raiders({1: 50, 2: 40, 3: 40, 4: 10, 5: 0}) == ({1}, {2, 3})
     assert top_raiders({1: 50, 2: 50, 3: 40, 4: 30}) == ({1, 2}, {3})
     assert top_raiders({1: 0}) == (set(), set())
+
+    assert pad("Bob") == "Bob" + " " * 9
+    assert pad("Averyveryverylongname") == "Averyveryve…"
+    assert pad("王者") == "王者" + " " * 8  # 2 columns each
+    assert pad("王者王者王者王者") == "王者王者王…" + " "  # 10 columns + … = 11, one space to 12

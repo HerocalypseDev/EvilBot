@@ -2780,10 +2780,9 @@ def raids_rows(guild, row):
 def raids_embed(guild, rows):
     ranked = board.raids_ranked([(ign, n) for _, ign, n in rows])
     total, top = sum(n for *_, n in ranked), ranked[0][2] if ranked else 0
-    podium = [f"{board.MEDALS[r - 1]} **{discord.utils.escape_markdown(ign)}** · **{n:,}** raids"
-              for r, ign, n in ranked if r <= 3 and n]
+    podium = [f"{board.MEDALS[r - 1]} {board.pad(ign)} {n:>6,} raids" for r, ign, n in ranked if r <= 3 and n]
     embed = discord.Embed(title="⚔️ Raids Completed · Hall of Fame",
-                          description="\n".join(podium) or "No raids logged yet.")
+                          description="```\n" + "\n".join(podium) + "\n```" if podium else "No raids logged yet.")
     embed.add_field(name="Guild total", value=f"**{total:,}** raids")
     embed.add_field(name="Raiders", value=f"**{sum(n > 0 for *_, n in ranked)}** of {len(ranked)}")
     embed.add_field(name="Average", value=f"**{round(total / len(ranked)):,}**" if ranked else "**0**")

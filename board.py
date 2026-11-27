@@ -1,6 +1,7 @@
 import csv
 import io
 import re
+import unicodedata
 from datetime import date, datetime, timedelta, timezone
 
 from discord.utils import escape_markdown
@@ -549,11 +550,23 @@ def raids_ranked(rows):
     return [(1 + sum(c > n for _, c in rows), ign, n) for ign, n in rows]
 
 
+def pad(name, width=12):
+    """Cut or pad a name to `width` screen columns, so the next column lines up in a code block.
+    Wide characters (Chinese, Japanese, Korean) take 2 columns; marks that combine with the letter before take 0."""
+    def cols(c):
+        return 0 if unicodedata.combining(c) else 2 if unicodedata.east_asian_width(c) in "WF" else 1
+    out, used = "", 0
+    name = name.replace("`", "'")
+    for c in name:
+        if used + cols(c) > width - (sum(map(cols, name)) > width):  # leave 1 column for the … when cut
+            return out + "…" + " " * (width - used - 1)
+        out, used = out + c, used + cols(c)
+    return out + " " * (width - used)
+
+
 def raids_line(rank, ign, count, top):
     """One code-block row: rank, name, count and a bar scaled to the top count."""
-    name = ign.replace("`", "'")
-    name = name if len(name) <= 12 else name[:11] + "…"
-    return f"{rank:>3}. {name:<12} {count:>5,} {bar(count, top, 8)}"
+    return f"{rank:>3}. {pad(ign)} {count:>5,} {bar(count, top, 8)}"
 
 
 RAID_ROLE = re.compile(r"(\d+) raid completions", re.IGNORECASE)
